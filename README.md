@@ -6,9 +6,17 @@ Due to its focus on short-term states, the model isn’t very effective at makin
 
 ## Results
 
-The model does achieve notable profits, but is not consistent and can not generalize well accross different datasets yet.
+The model behavior is not excelling for "long time investments", but it is accurate at predicting peaks where to sell. One model is always trained on only one stock. Applying them to different stocks shows generalization capabilities. Nevertheless, not always the profit is high or positive. 
 
-Graphs of the results will be shown soon... 
+![Model1](https://github.com/leonard-creator/DQN_Trading/blob/main/graphs/Model_GSPC_reward_target10_on_GSPC_2011.png)
+
+![Model2](https://github.com/leonard-creator/DQN_Trading/blob/main/graphs/Model_GSPC_reward_target6_on_GSPC_2011.png)
+
+![Generalization](https://github.com/leonard-creator/DQN_Trading/blob/main/graphs/Model_GSPC_reward_target6_on_SundP_2024.png)
+
+![Model3](https://github.com/leonard-creator/DQN_Trading/blob/main/graphs/Model_GSPC_reward_target8_on_GSPC_2011.png)
+![Generalization_positive](https://github.com/leonard-creator/DQN_Trading/blob/main/graphs/Model_GSPC_reward_target8_on_SundP_2024.png)
+
 
 ## Getting the data 
 
