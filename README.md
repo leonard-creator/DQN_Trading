@@ -8,17 +8,23 @@ Due to its focus on short-term states, the model isn’t very effective at makin
 
 The model behavior is not excelling for "long time investments", but it is accurate at predicting peaks where to sell. One model is always trained on only one stock. Applying them to different stocks shows generalization capabilities. Nevertheless, not always the profit is high or positive. 
 
+### Model 1 
 ![Model1](https://github.com/leonard-creator/DQN_Trading/blob/main/graphs/Model_GSPC_reward_target10_on_GSPC_2011.png)
 
+### Model 1 version2
 ![Model2](https://github.com/leonard-creator/DQN_Trading/blob/main/graphs/Model_GSPC_reward_target6_on_GSPC_2011.png)
 
+### Model 1 version2 on different stock 
 ![Generalization](https://github.com/leonard-creator/DQN_Trading/blob/main/graphs/Model_GSPC_reward_target6_on_SundP_2024.png)
 
+### Model 1 version3 
 ![Model3](https://github.com/leonard-creator/DQN_Trading/blob/main/graphs/Model_GSPC_reward_target8_on_GSPC_2011.png)
+
+### Model 1 version3 on different stock
 ![Generalization_positive](https://github.com/leonard-creator/DQN_Trading/blob/main/graphs/Model_GSPC_reward_target8_on_SundP_2024.png)
 
 
-## Getting the data 
+## Sourcing the data 
 
 For model training, a csv file containing the collumns Date, Open, High, Low, Close of a chosen stock for at least a year. Data can be retrieved from [Yahoo! Finance](https://ca.finance.yahoo.com/quote/%5EGSPC/history?p=%5EGSPC) and stored in `data/`.
 
