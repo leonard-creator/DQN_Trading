@@ -1,17 +1,33 @@
 from agent.agent import Agent
+from keras.models import load_model
 from functions import *
 import sys
+import os
 
-if len(sys.argv) != 5:
-	print ("Usage: python train.py [stock] [window] [episodes] [model-name]")
+if not (len(sys.argv) == 5 or len(sys.argv) == 6):
+	print ("Usage: python train.py [stock] [window] [episodes] [model-name] [retrain (optional)]")
 	exit()
 
 stock_name, window_size, episode_count, model_name = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]),  str(sys.argv[4])
 
-agent = Agent(window_size, model_name=model_name)
+# retrain a model
+if len(sys.argv) >5:
+	print(f'continue training model {model_name} on stock {stock_name} ...')
+	path = "D:\\Dokumente\\UNI\\Master Leiden\\Own_Projects\\DQN_Trader\\models"
+	absolute_path = os.path.join(path, model_name)	
+	model = load_model(absolute_path)
+	window_size = model.layers[0].input.shape.as_list()[1]
+	agent = Agent(window_size, model_name=model_name, is_eval=True)
+	print(f'Agent with memory:{agent.memory}, name:{model_name}, gamma:{agent.gamma}, lr: {agent.learning_rate}, epsilon:{agent.epsilon}, epsilon decay:{agent.epsilon_decay}, epsilon min:{agent.epsilon_min}')
+	model_name = model_name + "_"
+
+# create new model 
+else:
+	agent = Agent(window_size, model_name=model_name)
+
 data = getStockDataVec(stock_name)
 l = len(data) - 1
-batch_size = 32 # 32
+replay_mem_batch_size = 32 # 32
 
 for episode in range(episode_count + 1):
 	print("Episode " + str(episode) + "/" + str(episode_count))
@@ -69,8 +85,10 @@ for episode in range(episode_count + 1):
 			print( "--------------------------------")
 			print ("Total Profit: " + formatPrice(total_profit))
 			print( "--------------------------------")
-
-		if len(agent.memory) > batch_size:
-			agent.expReplay(batch_size)
+		
+		# Experienced Replay step
+		if len(agent.memory) > replay_mem_batch_size:
+			agent.expReplay(replay_mem_batch_size)
+	# intermediate saving
 	if episode % 1 == 0:
 		agent.model.save("models/" + agent.model_name + str(episode))
