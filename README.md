@@ -6,7 +6,7 @@ Due to its focus on short-term states, the model isn’t very effective at makin
 
 ## Results
 
-The model behavior is not excelling for "long time investments", but it is accurate at predicting peaks where to sell. One model is always trained on only one stock. Applying them to different stocks shows generalization capabilities. Nevertheless, not always the profit is high or positive. 
+The model behavior is not ideal for "long time investments", but it is accurate at predicting peaks where to sell. One model is always trained on only one stock. Applying them to different stocks shows generalization capabilities. Nevertheless, not always the profit is high or positive. 
 
 ### Model 1 
 ![Model1](https://github.com/leonard-creator/DQN_Trading/blob/main/graphs/Model_GSPC_reward_target10_on_GSPC_2011.png)
@@ -28,8 +28,15 @@ The model behavior is not excelling for "long time investments", but it is accur
 
 For model training, a csv file containing the collumns Date, Open, High, Low, Close of a chosen stock for at least a year. Data can be retrieved from [Yahoo! Finance](https://ca.finance.yahoo.com/quote/%5EGSPC/history?p=%5EGSPC) and stored in `data/`.
 
-## Starting 
+## Training 
 ```
 mkdir model
 python train ^GSPC 10 1000
 ```
+## Evaluating 
+
+```
+python evaluate.py [stock dataset name] [model name] [verbose(yes/no)]
+```
+
+The model is applied on the dataset, presenting the final profit. A graph will be created that indicates the stock price on the y-axis and the trading days on the x-axis. Green and red rectangular are placed to indicate buy and cell operations taken by the model. The graph can be viewed interactively (zoom in or moved) and saved. 
