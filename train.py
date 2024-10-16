@@ -3,6 +3,7 @@ from keras.models import load_model
 from functions import *
 import sys
 import os
+import wandb
 
 if not (len(sys.argv) == 5 or len(sys.argv) == 6):
 	print ("Usage: python train.py [stock] [window] [episodes] [model-name] [retrain (optional)]")
@@ -28,6 +29,31 @@ else:
 data = getStockDataVec(stock_name)
 l = len(data) - 1
 replay_mem_batch_size = 32 # 32
+
+# initialize Wandb for tracking
+run = wandb.init(
+    # Set the project where this run will be logged
+    project="Deep Q-learning trader",
+    # Track hyperparameters and run metadata
+    config={
+        "model_name": model_name,
+		"stock_name": stock_name,
+        "window_size": window_size,
+		"episode_count": episode_count,
+		"memory_buffer_size":len(agent.memory),
+		"memory_size": replay_mem_batch_size,
+		"lr": agent.learning_rate,
+		"gamma": agent.gamma,
+		"epsilon": agent.epsilon,
+		"epsilon_decay": agent.epsilon_decay,
+		"target_N": True,
+		"NN_architecture":None,
+		"reward_type":"profit_based", # reward strategy
+
+    },
+)
+
+
 
 for episode in range(episode_count + 1):
 	print("Episode " + str(episode) + "/" + str(episode_count))
@@ -73,7 +99,7 @@ for episode in range(episode_count + 1):
 			done = True 
 		else:
 			done = False
-
+		# append state to memory buffer 
 		agent.memory.append((state, action, reward, next_state, done))
 		state = next_state
 
@@ -81,14 +107,24 @@ for episode in range(episode_count + 1):
 		if timestep % 100 == 0:
 			agent.target_model.set_weights(agent.model.get_weights())
 
-		if done:
-			print( "--------------------------------")
-			print ("Total Profit: " + formatPrice(total_profit))
-			print( "--------------------------------")
+		# update total profit every 100 timesteps
+		if timestep % 25 == 0:
+			wandb.log({"total_profit":total_profit, "inventory":len(agent.inventory),
+			   "timestep":timestep,"episode":episode, "epsilon":agent.epsilon, "buffer_size":len(agent.memory)})
+
 		
 		# Experienced Replay step
 		if len(agent.memory) > replay_mem_batch_size:
 			agent.expReplay(replay_mem_batch_size)
+
+		if done:
+			print( "--------------------------------")
+			print ("Total Profit: " + formatPrice(total_profit))
+			print( "--------------------------------")
+			# log last metrics before new episode begins
+			#wandb.log({"total_profit":total_profit, "inventory":len(agent.inventory),
+			#   "timestep":timestep,"episode":episode, "epsilon":agent.epsilon, "buffer_size":len(agent.memory)})
+
 	# intermediate saving
 	if episode % 1 == 0:
 		agent.model.save("models/" + agent.model_name + str(episode))
