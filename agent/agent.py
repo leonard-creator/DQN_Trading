@@ -10,7 +10,7 @@ from collections import deque
 
 class Agent:
 	def __init__(self, state_size, model_name, is_eval=False, use_target=True):
-		self.state_size = state_size # normalized previous days
+		self.state_size = state_size # normalsigmoid transformed close dates of n days window
 		self.action_size = 4 # sit, buy, sell first, sell last
 		self.memory = deque(maxlen=1000) # 1000 change to sampling out of the last 100
 		self.inventory = []
