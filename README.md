@@ -8,27 +8,34 @@ Due to its focus on short-term states, the Agent isn’t very effective at makin
 
 The Agent behavior is not ideal for "long time investments", but it is accurate at predicting peaks where to sell. One Agent is always trained on only one stock. Applying them to different stocks shows generalization capabilities. Nevertheless, not always the profit is high or positive. 
 
-### Agent trained on 5 years Google stock one complete episode
+### Google
+Agent trained on 5 years Google stock one complete episode
 
 ![Agent1](https://github.com/leonard-creator/DQN_Trading/blob/main/graphs/Google0_googletest.png)
 
-### Agent trained on 5 years Google stock two complete episode
+### Google
+Agent trained on 5 years Google stock two complete episode
 ![Agent1.2](https://github.com/leonard-creator/DQN_Trading/blob/main/graphs/Google1_googletest.png)
 
-### Agent trained on 5 years Google stock one complete episode, tested on 2024 S&P data
+### Google 
+Agent trained on 5 years Google stock one complete episode, tested on 2024 S&P data
 ![Agent1_generailzation](https://github.com/leonard-creator/DQN_Trading/blob/main/graphs/Google0_SundP_test.png)
 
-### Agent trained on 5 years Google stock one complete episode, tested on 2024 S&P data
+### Google
+Agent trained on 5 years Google stock one complete episode, tested on 2024 MSCI-World test data
 ![Agent1_generailzation](https://github.com/leonard-creator/DQN_Trading/blob/main/graphs/Google0_iSharesMSCIWorld_test.png)
 
 
-### Agent trained on 2019-2022 S&P index, tested on 2024 S&P data 
+### S&P small
+Agent trained on 2019-2022 S&P index, tested on 2024 S&P data 
 ![Agent3](https://github.com/leonard-creator/DQN_Trading/blob/main/graphs/smallSP2_SundPtest.png)
 
-### Agent trained on 2019-2022 S&P index, tested on 2024 Google-test data
+### S&P small
+Agent trained on 2019-2022 S&P index, tested on 2024 Google-test data
 ![Agent3](https://github.com/leonard-creator/DQN_Trading/blob/main/graphs/smallSP2_Google_test.png)
 
-### Agent trained on 2019-2022 S&P index, tested on 2024 MSCI-World test data
+### S&P small
+Agent trained on 2019-2022 S&P index, tested on 2024 MSCI-World test data
 ![Agent3](https://github.com/leonard-creator/DQN_Trading/blob/main/graphs/smallSP2_iSharesMSCIWorld-test.png)
 
 
