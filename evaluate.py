@@ -22,7 +22,7 @@ model = load_model(absolute_path)
 window_size = model.layers[0].input.shape.as_list()[1]
 
 agent = Agent(window_size, model_name=model_name, is_eval=True, use_target=True)
-data = getStockDataVec(stock_name)
+data = getStockDataVec(stock_name, test=True)
 l = len(data) - 1
 batch_size = 32
 

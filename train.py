@@ -75,8 +75,8 @@ for episode in range(episode_count + 1):
 			#if len(agent.inventory)<=2:
 			#	reward = 1
 			agent.inventory.append(data[timestep])
-			print ("Buy: " + formatPrice(data[timestep]))
-			#reward = -1
+			##print ("Buy: " + formatPrice(data[timestep]))
+			
 		
 		# sell first 
 		elif action == 2 and len(agent.inventory) > 0: # sell
@@ -84,7 +84,7 @@ for episode in range(episode_count + 1):
 			reward = data[timestep] - bought_price # why not reward -1 for punishing? doesnt seem to work though
 
 			total_profit += data[timestep] - bought_price
-			print( "Sell first: " + formatPrice(data[timestep]) + " | Profit: " + formatPrice(data[timestep] - bought_price))
+			##print( "Sell first: " + formatPrice(data[timestep]) + " | Profit: " + formatPrice(data[timestep] - bought_price))
 		
 		# sell last
 		elif action == 3 and len(agent.inventory) > 0: # sell
@@ -92,7 +92,7 @@ for episode in range(episode_count + 1):
 			reward = data[timestep] - bought_price # why not reward -1 for punishing? doesnt seem to work though
 
 			total_profit += data[timestep] - bought_price
-			print( "Sell last: " + formatPrice(data[timestep]) + " | Profit: " + formatPrice(data[timestep] - bought_price))
+			##print( "Sell last: " + formatPrice(data[timestep]) + " | Profit: " + formatPrice(data[timestep] - bought_price))
 
 		# updating end of timesteps
 		if timestep == l - 1:

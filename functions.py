@@ -6,9 +6,12 @@ def formatPrice(n):
 	return ("-$" if n < 0 else "$") + "{0:.2f}".format(abs(n))
 
 # returns the vector containing stock data from a fixed file
-def getStockDataVec(key):
+def getStockDataVec(key, test=False):
 	vec = []
-	lines = open("data/" + key, "r").read().splitlines()
+	if test:
+		lines = open("test_data/" + key, "r").read().splitlines()
+	else:
+		lines = open("train_data/" + key, "r").read().splitlines()
 
 	for line in lines[1:]:
 		vec.append(float(line.split(",")[4]))
