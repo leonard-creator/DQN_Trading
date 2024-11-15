@@ -14,6 +14,7 @@ class Agent:
 		self.action_size = 4 # sit, buy, sell first, sell last
 		self.memory = deque(maxlen=1000) # 1000 change to sampling out of the last 100
 		self.inventory = []
+		self.eval_inventory = []
 		self.model_name = model_name
 		self.is_eval = is_eval
 

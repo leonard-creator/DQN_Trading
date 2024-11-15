@@ -1,9 +1,20 @@
 from agent.agent import Agent
 from keras.models import load_model
+from evaluate import evaluate
 from functions import *
 import sys
 import os
 import wandb
+
+######################
+# TODO ´s and ideas 
+# - implment regular validation on test set that is uploaded to wandb, prevents overfitting 
+#   and could be used as early stopping approach - DONE
+# - make use of more analysis data as given by new datasets, integrate them into model,
+#   pay attention to normalize all values and make them usable with different stock scales, 
+#   model will be significantly larger then
+# - implement punishment for big inventory, shape reward function accordingly
+#######################
 
 if not (len(sys.argv) == 5 or len(sys.argv) == 6):
 	print ("Usage: python train.py [stock] [window] [episodes] [model-name] [retrain (optional)]")
@@ -25,8 +36,12 @@ if len(sys.argv) >5:
 # create new model 
 else:
 	agent = Agent(window_size, model_name=model_name)
+import pdb; pdb.set_trace()
 
 data = getStockDataVec(stock_name)
+# create validation dataset from training set 
+validation_data = data[-50:]
+data = data[:-50]
 l = len(data) - 1
 replay_mem_batch_size = 32 # 32
 
@@ -60,6 +75,7 @@ for episode in range(episode_count + 1):
 	state = getState(data, 0, window_size + 1)
 
 	total_profit = 0
+	validation_profit =0
 	agent.inventory = []
 
 	for timestep in range(l):
@@ -109,8 +125,9 @@ for episode in range(episode_count + 1):
 
 		# update total profit every 100 timesteps
 		if timestep % 25 == 0:
+			validation_profit = evaluate(agent, validation_data, plotting=False)
 			wandb.log({"total_profit":total_profit, "inventory":len(agent.inventory),
-			   "timestep":timestep,"episode":episode, "epsilon":agent.epsilon, "buffer_size":len(agent.memory)})
+			   "timestep":timestep,"episode":episode, "epsilon":agent.epsilon, "buffer_size":len(agent.memory), "validation_profit":validation_profit})
 
 		
 		# Experienced Replay step
