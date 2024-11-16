@@ -12,7 +12,8 @@ import wandb
 #   and could be used as early stopping approach - DONE
 # - make use of more analysis data as given by new datasets, integrate them into model,
 #   pay attention to normalize all values and make them usable with different stock scales, 
-#   model will be significantly larger then
+#   model will be significantly larger then - DONE but standardize the input values
+#  ->> Volume,ROC12,MFI14,FVolatility
 # - implement punishment for big inventory, shape reward function accordingly
 #######################
 
@@ -36,7 +37,7 @@ if len(sys.argv) >5:
 # create new model 
 else:
 	agent = Agent(window_size, model_name=model_name)
-import pdb; pdb.set_trace()
+
 
 data = getStockDataVec(stock_name)
 # create validation dataset from training set 
@@ -64,6 +65,7 @@ run = wandb.init(
 		"target_N": True,
 		"NN_architecture":None,
 		"reward_type":"profit_based", # reward strategy
+		"multi_Parameter":"5 values_2diff"
 
     },
 )
@@ -77,11 +79,11 @@ for episode in range(episode_count + 1):
 	total_profit = 0
 	validation_profit =0
 	agent.inventory = []
-
+	# t=0 bis t
 	for timestep in range(l):
 		#import pdb; pdb.set_trace()
 		action = agent.act(state)
-
+		
 		# hold
 		next_state = getState(data, timestep + 1, window_size + 1)
 		reward = 0
@@ -90,24 +92,24 @@ for episode in range(episode_count + 1):
 		if action == 1:
 			#if len(agent.inventory)<=2:
 			#	reward = 1
-			agent.inventory.append(data[timestep])
+			agent.inventory.append(data[timestep][0]) # access only the closing price
 			##print ("Buy: " + formatPrice(data[timestep]))
 			
 		
 		# sell first 
 		elif action == 2 and len(agent.inventory) > 0: # sell
 			bought_price = agent.inventory.pop(0)
-			reward = data[timestep] - bought_price # why not reward -1 for punishing? doesnt seem to work though
+			reward = data[timestep][0] - bought_price # why not reward -1 for punishing? doesnt seem to work though
 
-			total_profit += data[timestep] - bought_price
+			total_profit += data[timestep][0] - bought_price
 			##print( "Sell first: " + formatPrice(data[timestep]) + " | Profit: " + formatPrice(data[timestep] - bought_price))
 		
 		# sell last
 		elif action == 3 and len(agent.inventory) > 0: # sell
 			bought_price = agent.inventory.pop() # pop last in inventory
-			reward = data[timestep] - bought_price # why not reward -1 for punishing? doesnt seem to work though
+			reward = data[timestep][0] - bought_price # why not reward -1 for punishing? doesnt seem to work though
 
-			total_profit += data[timestep] - bought_price
+			total_profit += data[timestep][0] - bought_price
 			##print( "Sell last: " + formatPrice(data[timestep]) + " | Profit: " + formatPrice(data[timestep] - bought_price))
 
 		# updating end of timesteps
@@ -125,9 +127,10 @@ for episode in range(episode_count + 1):
 
 		# update total profit every 100 timesteps
 		if timestep % 25 == 0:
-			validation_profit = evaluate(agent, validation_data, plotting=False)
+			val_res = evaluate(agent, validation_data, window_size,stock_name, plotting=False)
 			wandb.log({"total_profit":total_profit, "inventory":len(agent.inventory),
-			   "timestep":timestep,"episode":episode, "epsilon":agent.epsilon, "buffer_size":len(agent.memory), "validation_profit":validation_profit})
+			   "timestep":timestep,"episode":episode, "epsilon":agent.epsilon, "buffer_size":len(agent.memory),
+				 "validation_profit":val_res[0], "relative_profit":val_res[1]})
 
 		
 		# Experienced Replay step

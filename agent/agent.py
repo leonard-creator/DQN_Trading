@@ -1,7 +1,7 @@
 import keras
 from keras.models import Sequential
 from keras.models import load_model
-from keras.layers import Dense, BatchNormalization
+from keras.layers import Dense, BatchNormalization, Flatten, Dropout, LSTM
 from keras.optimizers import Adam
 
 import numpy as np
@@ -33,14 +33,20 @@ class Agent:
 
 	def _model(self):
 		model = Sequential()
-		model.add(Dense(units=64, input_dim=self.state_size, activation="relu"))
+		model.add(keras.Input(shape=(self.state_size, 5)))
+		model.add(Flatten())
+		##model.add(Dense(units=64, input_dim=self.state_size, activation="relu"))
 		#model.add(BatchNormalization())
+		##model.add(Dropout(0.3))
 		model.add(Dense(units=128, activation="relu"))
 		#model.add(BatchNormalization())
+		##model.add(Dropout(0.3))
 		model.add(Dense(units=128, activation="relu"))
 		#model.add(BatchNormalization())
+		##model.add(Dropout(0.3))
 		model.add(Dense(units=64, activation="relu"))
 		#model.add(BatchNormalization())
+		##model.add(Dropout(0.3))
 		model.add(Dense(units=32, activation="relu"))
 		model.add(Dense(self.action_size, activation="linear"))
 		model.compile(loss="mse", optimizer=Adam(learning_rate= self.learning_rate))
@@ -87,6 +93,7 @@ class Agent:
 		return target_f
 
 	def act(self, state):
+		state = np.expand_dims(state, axis=0)  # Adds batch_size dimension, resulting in shape (1, state_size, 5)
 		# Use a single condition for exploration vs. exploitation
 		if not self.is_eval and np.random.uniform(0, 1) <= self.epsilon:
 			# Random action for exploration
@@ -115,8 +122,10 @@ class Agent:
 				# temporal difference learning TD-target
 				#target = reward + self.gamma * np.amax(self.model(next_state)[0]) # model.predict
 				# using target model for prediction
+				next_state = np.expand_dims(next_state, axis=0)  # Adds batch_size dimension, resulting in shape (1, state_size, 5)
 				target = reward + self.gamma * np.amax(self.target_model(next_state, training=False)[0]) 
-
+			
+			state = np.expand_dims(state, axis=0)
 			target_f = self.model(state, training=False).numpy() # model.predict
 			target_f[0][action] = target
 			self.model.fit(state, target_f, epochs=1, verbose=0)

@@ -13,41 +13,47 @@ from datetime import datetime, timedelta
 # validation runs during training, so not the final test data 
 # returns: total profit of acting on the dataset, return as validation_profit during training 
 # TODO: implement cross fold validation for training data 
-def evaluate(agent, data, plotting, verbose = False):
+def evaluate(agent, data, window_size, stock_name, plotting=False, verbose = False):
+	state = getState(data, 0, window_size + 1)
+	total_profit = 0
+	# graph creation
+	buy_signals = []
+	sell_signals = []
+
 	for t in range(len(data)):
 		action = agent.act(state)
 
-		# sit
+		# hold
 		next_state = getState(data, t + 1, window_size + 1)
-		#update date 
-		current_date = start_date + timedelta(days=t)
 		
 		# Acting on actions 
 		if action == 1: # buy
-			agent.eval_inventory.append(data[t])
-			buy_signals.append((t, data[t]))
-			if not verbose: print( "Buy: " + formatPrice(data[t]))
+			agent.eval_inventory.append(data[t][0])
+			buy_signals.append((t, data[t][0]))
+			if verbose: print( "Buy: " + formatPrice(data[t][0]))
 		
 		# sell first out of inventory
 		elif action == 2 and len(agent.eval_inventory) > 0: # sell
 			bought_price = agent.eval_inventory.pop(0)
-			total_profit += data[t] - bought_price
-			sell_signals.append((t, data[t]))
-			if verbose: print("Sell: " + formatPrice(data[t]) + " | Profit: " + formatPrice(data[t] - bought_price))
+			total_profit += data[t][0] - bought_price
+			sell_signals.append((t, data[t][0]))
+			if verbose: print("Sell: " + formatPrice(data[t][0]) + " | Profit: " + formatPrice(data[t][0] - bought_price))
 
 		# sell last out of inventory 
 		elif action == 3 and len(agent.eval_inventory) > 0: # sell
 			bought_price = agent.eval_inventory.pop()
-			total_profit += data[t] - bought_price
-			sell_signals.append((t, data[t]))
-			if verbose: print("Sell: " + formatPrice(data[t]) + " | Profit: " + formatPrice(data[t] - bought_price))
+			total_profit += data[t][0] - bought_price
+			sell_signals.append((t, data[t][0]))
+			if verbose: print("Sell: " + formatPrice(data[t][0]) + " | Profit: " + formatPrice(data[t][0] - bought_price))
 
 		##done = True if t == l - 1 else False
 		state = next_state
 
 	# run through all data 
 	print ("--------------------------------")
-	print (stock_name + " Total Profit: " + formatPrice(total_profit))
+	invested = np.sum(x for t, x in buy_signals)
+	perc_profit = (total_profit*100) / (invested + 1e-9)
+	print(f'Total Profit: {formatPrice(total_profit)}, profit/invested: {perc_profit:.3f} % ')
 	print( "--------------------------------")
 	# delete evaluation inventory
 	agent.eval_inventory = []
@@ -72,7 +78,7 @@ def evaluate(agent, data, plotting, verbose = False):
 		plt.title(f'{model_name} on stock data {stock_name}')
 		plt.show()
 
-	return total_profit
+	return total_profit, perc_profit
 
 if __name__ == "__main__":
 
