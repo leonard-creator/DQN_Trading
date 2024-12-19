@@ -30,13 +30,13 @@ if len(sys.argv) >5:
 	absolute_path = os.path.join(path, model_name)	
 	model = load_model(absolute_path)
 	window_size = model.layers[0].input.shape.as_list()[1]
-	agent = Agent(window_size, model_name=model_name, is_eval=True)
+	agent = Agent(window_size, model_name=model_name, is_eval=True) #window_size
 	print(f'Agent with memory:{agent.memory}, name:{model_name}, gamma:{agent.gamma}, lr: {agent.learning_rate}, epsilon:{agent.epsilon}, epsilon decay:{agent.epsilon_decay}, epsilon min:{agent.epsilon_min}')
 	model_name = model_name + "_"
 
 # create new model 
 else:
-	agent = Agent(window_size, model_name=model_name)
+	agent = Agent(53, model_name=model_name)
 
 
 data = getStockDataVec(stock_name)
@@ -45,6 +45,7 @@ validation_data = data[-50:]
 data = data[:-50]
 l = len(data) - 1
 replay_mem_batch_size = 32 # 32
+k = 100 # reward shape factor for reward = relative profit so far 
 
 # initialize Wandb for tracking
 run = wandb.init(
@@ -64,8 +65,8 @@ run = wandb.init(
 		"epsilon_decay": agent.epsilon_decay,
 		"target_N": True,
 		"NN_architecture":None,
-		"reward_type":"profit_based", # reward strategy
-		"multi_Parameter":"5 values_2diff"
+		"reward_type":"profit_based_relative%", # reward strategy
+		"multi_Parameter":"5 values_2diff_noArchitecture"
 
     },
 )
@@ -99,17 +100,19 @@ for episode in range(episode_count + 1):
 		# sell first 
 		elif action == 2 and len(agent.inventory) > 0: # sell
 			bought_price = agent.inventory.pop(0)
-			reward = data[timestep][0] - bought_price # why not reward -1 for punishing? doesnt seem to work though
+			#reward = data[timestep][0] - bought_price # why not reward -1 for punishing? doesnt seem to work though
 
 			total_profit += data[timestep][0] - bought_price
+			reward = ((total_profit *100) / (sum(agent.inventory) + 1)) * k
 			##print( "Sell first: " + formatPrice(data[timestep]) + " | Profit: " + formatPrice(data[timestep] - bought_price))
 		
 		# sell last
 		elif action == 3 and len(agent.inventory) > 0: # sell
 			bought_price = agent.inventory.pop() # pop last in inventory
-			reward = data[timestep][0] - bought_price # why not reward -1 for punishing? doesnt seem to work though
+			#reward = data[timestep][0] - bought_price # why not reward -1 for punishing? doesnt seem to work though
 
 			total_profit += data[timestep][0] - bought_price
+			reward = ((total_profit *100) / (sum(agent.inventory) + 1)) * k
 			##print( "Sell last: " + formatPrice(data[timestep]) + " | Profit: " + formatPrice(data[timestep] - bought_price))
 
 		# updating end of timesteps
