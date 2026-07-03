@@ -1,0 +1,9 @@
+# DQN Trader dependencies.
+# TF >= 2.16 ships Keras 3 and supports NumPy 2.x (matches scvi-env's numpy).
+# Models are saved as portable single-file ".keras" archives, so no SavedModel
+# directory / NumPy-1.x pinning is needed.
+tensorflow[and-cuda]>=2.16   # drop "[and-cuda]" for a CPU-only install
+numpy>=2.0
+pandas>=2.0
+matplotlib>=3.7
+wandb>=0.16

@@ -1,153 +1,139 @@
-from agent.agent import Agent
-from keras.models import load_model
-from evaluate import evaluate
-from functions import *
-import sys
+"""Train the DQN trader.
+
+Example:
+    python train.py SundPGI_train.csv myrun --episodes 50 --window 10
+
+Highlights vs. the old loop:
+* One shared TradingEnv drives both training and (greedy) validation.
+* Vectorized Double-DQN replay -> big GPU speedup.
+* Epsilon decays on a schedule over the whole run, not per replay call.
+* Feature scaler is fit on the training slice only and saved with the model.
+"""
+
+import argparse
 import os
+import random
+import numpy as np
 import wandb
 
-######################
-# TODO ´s and ideas 
-# - implment regular validation on test set that is uploaded to wandb, prevents overfitting 
-#   and could be used as early stopping approach - DONE
-# - make use of more analysis data as given by new datasets, integrate them into model,
-#   pay attention to normalize all values and make them usable with different stock scales, 
-#   model will be significantly larger then - DONE but standardize the input values
-#  ->> Volume,ROC12,MFI14,FVolatility
-# - implement punishment for big inventory, shape reward function accordingly
-#######################
-
-if not (len(sys.argv) == 5 or len(sys.argv) == 6):
-	print ("Usage: python train.py [stock] [window] [episodes] [model-name] [retrain (optional)]")
-	exit()
-
-stock_name, window_size, episode_count, model_name = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]),  str(sys.argv[4])
-
-# retrain a model
-if len(sys.argv) >5:
-	print(f'continue training model {model_name} on stock {stock_name} ...')
-	path = "D:\\Dokumente\\UNI\\Master Leiden\\Own_Projects\\DQN_Trader\\models"
-	absolute_path = os.path.join(path, model_name)	
-	model = load_model(absolute_path)
-	window_size = model.layers[0].input.shape.as_list()[1]
-	agent = Agent(window_size, model_name=model_name, is_eval=True) #window_size
-	print(f'Agent with memory:{agent.memory}, name:{model_name}, gamma:{agent.gamma}, lr: {agent.learning_rate}, epsilon:{agent.epsilon}, epsilon decay:{agent.epsilon_decay}, epsilon min:{agent.epsilon_min}')
-	model_name = model_name + "_"
-
-# create new model 
-else:
-	agent = Agent(53, model_name=model_name)
+from functions import load_features, FeatureScaler, DEFAULT_FEATURES
+from env import TradingEnv
+from agent.agent import Agent, ReplayBuffer
+from evaluate import evaluate
 
 
-data = getStockDataVec(stock_name)
-# create validation dataset from training set 
-validation_data = data[-50:]
-data = data[:-50]
-l = len(data) - 1
-replay_mem_batch_size = 32 # 32
-k = 100 # reward shape factor for reward = relative profit so far 
-
-# initialize Wandb for tracking
-run = wandb.init(
-    # Set the project where this run will be logged
-    project="Deep Q-learning trader",
-    # Track hyperparameters and run metadata
-    config={
-        "model_name": model_name,
-		"stock_name": stock_name,
-        "window_size": window_size,
-		"episode_count": episode_count,
-		"memory_buffer_size":len(agent.memory),
-		"memory_size": replay_mem_batch_size,
-		"lr": agent.learning_rate,
-		"gamma": agent.gamma,
-		"epsilon": agent.epsilon,
-		"epsilon_decay": agent.epsilon_decay,
-		"target_N": True,
-		"NN_architecture":None,
-		"reward_type":"profit_based_relative%", # reward strategy
-		"multi_Parameter":"5 values_2diff_noArchitecture"
-
-    },
-)
+def set_seeds(seed):
+    """Seed python/numpy/tensorflow for reproducible runs."""
+    random.seed(seed)
+    np.random.seed(seed)
+    try:
+        import tensorflow as tf
+        tf.random.set_seed(seed)
+    except Exception:
+        pass
 
 
+def parse_args():
+    p = argparse.ArgumentParser(description="Train a DQN trader (multi-input, DSR reward)")
+    p.add_argument("stock", help="CSV filename inside train_data/")
+    p.add_argument("model_name", help="base name for saved models/ dirs")
+    p.add_argument("--window", type=int, default=10)
+    p.add_argument("--episodes", type=int, default=50)
+    p.add_argument("--features", nargs="+", default=DEFAULT_FEATURES)
+    p.add_argument("--gamma", type=float, default=0.99)
+    p.add_argument("--lr", type=float, default=1e-3)
+    p.add_argument("--batch-size", type=int, default=64)
+    p.add_argument("--buffer-size", type=int, default=100_000)
+    p.add_argument("--max-position", type=int, default=10)
+    p.add_argument("--transaction-cost", type=float, default=1.0)
+    p.add_argument("--dsr-eta", type=float, default=0.01)
+    p.add_argument("--dsr-clip", type=float, default=5.0)
+    p.add_argument("--inventory-penalty", type=float, default=0.0)
+    p.add_argument("--target-sync", type=int, default=500, help="steps between target net updates")
+    p.add_argument("--train-every", type=int, default=4, help="env steps between learn() calls")
+    p.add_argument("--epsilon-start", type=float, default=1.0)
+    p.add_argument("--epsilon-min", type=float, default=0.01)
+    p.add_argument("--decay-fraction", type=float, default=0.6)
+    p.add_argument("--arch", choices=["conv", "lstm", "mlp"], default="conv")
+    p.add_argument("--validation-days", type=int, default=50)
+    p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--no-wandb", action="store_true")
+    return p.parse_args()
 
-for episode in range(episode_count + 1):
-	print("Episode " + str(episode) + "/" + str(episode_count))
-	state = getState(data, 0, window_size + 1)
 
-	total_profit = 0
-	validation_profit =0
-	agent.inventory = []
-	# t=0 bis t
-	for timestep in range(l):
-		#import pdb; pdb.set_trace()
-		action = agent.act(state)
-		
-		# hold
-		next_state = getState(data, timestep + 1, window_size + 1)
-		reward = 0
+def main():
+    args = parse_args()
+    set_seeds(args.seed)
+    os.makedirs("models", exist_ok=True)
 
-		# buy
-		if action == 1:
-			#if len(agent.inventory)<=2:
-			#	reward = 1
-			agent.inventory.append(data[timestep][0]) # access only the closing price
-			##print ("Buy: " + formatPrice(data[timestep]))
-			
-		
-		# sell first 
-		elif action == 2 and len(agent.inventory) > 0: # sell
-			bought_price = agent.inventory.pop(0)
-			#reward = data[timestep][0] - bought_price # why not reward -1 for punishing? doesnt seem to work though
+    # --- data: fit the scaler on the TRAINING slice only (no leakage) ---
+    df, close = load_features(args.stock, args.features, test=False)
+    split = len(close) - args.validation_days
+    scaler = FeatureScaler(args.features).fit(df.iloc[:split])
+    feat = scaler.transform(df)                      # transform full series with train stats
+    scaler.save(f"models/{args.model_name}_scaler.json")
 
-			total_profit += data[timestep][0] - bought_price
-			reward = ((total_profit *100) / (sum(agent.inventory) + 1)) * k
-			##print( "Sell first: " + formatPrice(data[timestep]) + " | Profit: " + formatPrice(data[timestep] - bought_price))
-		
-		# sell last
-		elif action == 3 and len(agent.inventory) > 0: # sell
-			bought_price = agent.inventory.pop() # pop last in inventory
-			#reward = data[timestep][0] - bought_price # why not reward -1 for punishing? doesnt seem to work though
+    env_kwargs = dict(transaction_cost=args.transaction_cost, max_position=args.max_position,
+                      dsr_eta=args.dsr_eta, dsr_clip=args.dsr_clip)
+    train_env = TradingEnv(close[:split], feat[:split], args.window,
+                           inventory_penalty=args.inventory_penalty, **env_kwargs)
+    val_env = TradingEnv(close[split:], feat[split:], args.window, **env_kwargs)
 
-			total_profit += data[timestep][0] - bought_price
-			reward = ((total_profit *100) / (sum(agent.inventory) + 1)) * k
-			##print( "Sell last: " + formatPrice(data[timestep]) + " | Profit: " + formatPrice(data[timestep] - bought_price))
+    n_feat = feat.shape[1]
+    agent = Agent(window=args.window, n_feat=n_feat, n_pos=train_env.n_pos,
+                  action_size=3, model_name=args.model_name, arch=args.arch,
+                  gamma=args.gamma, lr=args.lr,
+                  epsilon_start=args.epsilon_start, epsilon_min=args.epsilon_min)
+    buffer = ReplayBuffer(args.buffer_size, args.window, n_feat, train_env.n_pos)
 
-		# updating end of timesteps
-		if timestep == l - 1:
-			done = True 
-		else:
-			done = False
-		# append state to memory buffer 
-		agent.memory.append((state, action, reward, next_state, done))
-		state = next_state
+    total_steps = args.episodes * train_env.length
+    agent.set_epsilon_schedule(total_steps, args.decay_fraction)
 
-		# update target model with new weights
-		if timestep % 100 == 0:
-			agent.target_model.set_weights(agent.model.get_weights())
+    # wandb: respects WANDB_MODE; --no-wandb disables it entirely so offline
+    # clusters never block on a login.
+    mode = "disabled" if args.no_wandb else os.environ.get("WANDB_MODE", "online")
+    run = wandb.init(project="Deep Q-learning trader", mode=mode,
+                     config={**vars(args), "n_feat": n_feat, "reward": "differential_sharpe"})
 
-		# update total profit every 100 timesteps
-		if timestep % 25 == 0:
-			val_res = evaluate(agent, validation_data, window_size,stock_name, plotting=False)
-			wandb.log({"total_profit":total_profit, "inventory":len(agent.inventory),
-			   "timestep":timestep,"episode":episode, "epsilon":agent.epsilon, "buffer_size":len(agent.memory),
-				 "validation_profit":val_res[0], "relative_profit":val_res[1]})
+    global_step = 0
+    for episode in range(args.episodes):
+        obs = train_env.reset()
+        info = {"realized_pnl": 0.0, "position": 0}
+        for _ in range(train_env.length):
+            action = agent.act(obs)
+            next_obs, reward, done, info = train_env.step(action)
+            buffer.add(obs, action, reward, next_obs, done)
+            obs = next_obs
 
-		
-		# Experienced Replay step
-		if len(agent.memory) > replay_mem_batch_size:
-			agent.expReplay(replay_mem_batch_size)
+            # learn on a schedule; sync the target net periodically
+            if len(buffer) >= args.batch_size and global_step % args.train_every == 0:
+                agent.learn(buffer, args.batch_size)
+            if global_step % args.target_sync == 0:
+                agent.sync_target()
+            agent.update_epsilon(global_step)
+            global_step += 1
 
-		if done:
-			print( "--------------------------------")
-			print ("Total Profit: " + formatPrice(total_profit))
-			print( "--------------------------------")
-			# log last metrics before new episode begins
-			#wandb.log({"total_profit":total_profit, "inventory":len(agent.inventory),
-			#   "timestep":timestep,"episode":episode, "epsilon":agent.epsilon, "buffer_size":len(agent.memory)})
+            if global_step % 200 == 0:
+                wandb.log({"episode": episode, "global_step": global_step,
+                           "epsilon": agent.epsilon, "train_realized_pnl": info["realized_pnl"],
+                           "position": info["position"], "buffer": len(buffer)})
+            if done:
+                break
 
-	# intermediate saving
-	if episode % 1 == 0:
-		agent.model.save("models/" + agent.model_name + str(episode))
+        # greedy validation on the held-out tail (no exploration pollution)
+        val = evaluate(agent, val_env, plotting=False, title=f"val ep{episode}")
+        print(f"Episode {episode + 1}/{args.episodes} | "
+              f"train realized €{info['realized_pnl']:.2f} | "
+              f"val realized €{val['realized_pnl']:.2f} | val Sharpe {val['sharpe']:.3f} | "
+              f"eps {agent.epsilon:.3f}")
+        wandb.log({"episode": episode, "train_realized_pnl_ep": info["realized_pnl"],
+                   "val_realized_pnl": val["realized_pnl"], "val_return_pct": val["return_pct"],
+                   "val_sharpe": val["sharpe"]})
+
+        agent.model.save(f"models/{args.model_name}{episode}.keras")   # portable Keras archive
+
+    run.finish()
+
+
+if __name__ == "__main__":
+    main()

@@ -1,134 +1,166 @@
+"""DQN agent with a two-input Conv1D Q-network and a vectorized replay buffer.
+
+Speed-critical change vs. the old code: experience replay used to call
+`model.fit()` once per sampled transition inside a Python loop. Here the whole
+minibatch is trained in a SINGLE forward/backward pass (`train_on_batch`) using
+Double-DQN targets, which is what makes GPU training 10-50x faster.
+"""
+
+import random
+import numpy as np
 import keras
-from keras.models import Sequential
-from keras.models import load_model
-from keras.layers import Dense, BatchNormalization, Flatten, Dropout, LSTM
+from keras.layers import (Input, Conv1D, Dense, Concatenate,
+                          GlobalAveragePooling1D, Flatten, LSTM)
+from keras.models import Model, load_model
 from keras.optimizers import Adam
 
-import numpy as np
-import random
-from collections import deque
+
+class ReplayBuffer:
+    """Pre-allocated ring buffer.
+
+    Stores the two observation components (market tensor + position vector)
+    separately so a sampled minibatch comes out as contiguous NumPy arrays
+    ready to feed straight into the network. Lives in host RAM; only the
+    sampled minibatch is copied to the GPU.
+
+    Memory ~= 2*(window*n_feat + n_pos)*4 bytes per transition. For
+    window=10, n_feat=5, n_pos=3 that is ~440 B, so 100k transitions ~= 44 MB.
+    """
+
+    def __init__(self, capacity, window, n_feat, n_pos):
+        self.capacity = int(capacity)
+        self.market = np.zeros((self.capacity, window, n_feat), np.float32)
+        self.pos = np.zeros((self.capacity, n_pos), np.float32)
+        self.next_market = np.zeros((self.capacity, window, n_feat), np.float32)
+        self.next_pos = np.zeros((self.capacity, n_pos), np.float32)
+        self.action = np.zeros(self.capacity, np.int32)
+        self.reward = np.zeros(self.capacity, np.float32)
+        self.done = np.zeros(self.capacity, np.float32)
+        self.idx = 0
+        self.size = 0
+
+    def add(self, obs, action, reward, next_obs, done):
+        i = self.idx
+        self.market[i], self.pos[i] = obs
+        self.next_market[i], self.next_pos[i] = next_obs
+        self.action[i] = action
+        self.reward[i] = reward
+        self.done[i] = float(done)
+        self.idx = (i + 1) % self.capacity
+        self.size = min(self.size + 1, self.capacity)
+
+    def sample(self, batch_size):
+        idx = np.random.randint(0, self.size, size=batch_size)
+        return (self.market[idx], self.pos[idx], self.action[idx], self.reward[idx],
+                self.next_market[idx], self.next_pos[idx], self.done[idx])
+
+    def __len__(self):
+        return self.size
+
+
+def build_model(arch, window, n_feat, n_pos, action_size, lr):
+    """Two-input Q-network: a temporal encoder over the (window, n_feat) market
+    tensor, concatenated with the position vector, then dense head -> Q-values.
+    """
+    market_in = Input(shape=(window, n_feat), name="market")
+    if arch == "conv":
+        # causal padding keeps the encoder from mixing in any future step
+        x = Conv1D(32, 3, activation="relu", padding="causal")(market_in)
+        x = Conv1D(64, 3, activation="relu", padding="causal")(x)
+        x = GlobalAveragePooling1D()(x)
+    elif arch == "lstm":
+        x = LSTM(64)(market_in)
+    else:  # "mlp" fallback: flatten the window, no temporal inductive bias
+        x = Flatten()(market_in)
+        x = Dense(128, activation="relu")(x)
+
+    pos_in = Input(shape=(n_pos,), name="position")
+    h = Concatenate()([x, pos_in])
+    h = Dense(64, activation="relu")(h)
+    h = Dense(32, activation="relu")(h)
+    q = Dense(action_size, activation="linear")(h)
+
+    model = Model([market_in, pos_in], q)
+    model.compile(loss="mse", optimizer=Adam(learning_rate=lr))
+    return model
+
 
 class Agent:
-	def __init__(self, state_size, model_name, is_eval=False, use_target=True):
-		self.state_size = state_size # normalsigmoid transformed close dates of n days window
-		self.action_size = 4 # sit, buy, sell first, sell last
-		self.memory = deque(maxlen=1000) # 1000 change to sampling out of the last 100
-		self.inventory = []
-		self.eval_inventory = []
-		self.model_name = model_name
-		self.is_eval = is_eval
+    def __init__(self, window=None, n_feat=None, n_pos=3, action_size=3,
+                 model_name=None, is_eval=False, use_target=True, arch="conv",
+                 gamma=0.99, lr=0.001, epsilon_start=1.0, epsilon_min=0.01):
+        self.model_name = model_name
+        self.is_eval = is_eval
+        self.action_size = action_size
+        self.gamma = gamma
+        self.learning_rate = lr
+        self.epsilon = epsilon_start
+        self.epsilon_start = epsilon_start
+        self.epsilon_min = epsilon_min
+        self.eps_decay_steps = 1
 
-		self.gamma = 0.999 #0.95
-		self.epsilon = 0.99 #1.0 # best model reward_target8 on ^GSPC 0.9
-		self.epsilon_min = 0.01
-		self.epsilon_decay = 0.995
-		self.learning_rate = 0.001
-		self.is_eval = is_eval
-		if self.is_eval:
-			self.model = load_model("models/" + model_name)
-		else:
-			self.model = self._model()
-		if use_target:
-			self.target_model = self.copy_network(self.model)
+        if is_eval:
+            # Load a trained model and read the input/output shapes back from it
+            # so evaluation never needs the training hyperparameters.
+            # Models are stored as portable single-file ".keras" archives.
+            name = model_name if model_name.endswith(".keras") else model_name + ".keras"
+            self.model = load_model("models/" + name)
+            self.window = int(self.model.inputs[0].shape[1])
+            self.n_feat = int(self.model.inputs[0].shape[2])
+            self.n_pos = int(self.model.inputs[1].shape[1])
+            self.action_size = int(self.model.outputs[0].shape[1])
+            self.target_model = None
+        else:
+            self.window, self.n_feat, self.n_pos = window, n_feat, n_pos
+            self.model = build_model(arch, window, n_feat, n_pos, action_size, lr)
+            self.target_model = self._clone(self.model) if use_target else None
 
-	def _model(self):
-		model = Sequential()
-		##model.add(keras.Input(shape=(self.state_size, 5)))
-		## model.add(Flatten()) # only for not transformed input vector
-		model.add(Dense(units=64, input_dim=self.state_size, activation="relu"))
-		#model.add(BatchNormalization())
-		#model.add(Dropout(0.3))
-		model.add(Dense(units=128, activation="relu"))
-		#model.add(BatchNormalization())
-		#model.add(Dropout(0.3))
-		model.add(Dense(units=128, activation="relu"))
-		#model.add(BatchNormalization())
-		#model.add(Dropout(0.3))
-		model.add(Dense(units=64, activation="relu"))
-		#model.add(BatchNormalization())
-		#model.add(Dropout(0.3))
-		model.add(Dense(units=32, activation="relu"))
-		model.add(Dense(self.action_size, activation="linear"))
-		model.compile(loss="mse", optimizer=Adam(learning_rate= self.learning_rate))
+    def _clone(self, model):
+        clone = keras.models.clone_model(model)   # same architecture, fresh weights
+        clone.set_weights(model.get_weights())
+        return clone
 
-		return model
+    def sync_target(self):
+        """Hard update: copy online weights into the target network."""
+        if self.target_model is not None:
+            self.target_model.set_weights(self.model.get_weights())
 
-	def copy_network(self , model):
-		model_copy = keras.models.clone_model(model)
-		model_copy.build((None, self.state_size))
-		model_copy.compile(loss="mse",	
-                      optimizer=Adam(learning_rate=self.learning_rate),
-                      metrics=["mae"])
-		model_copy.set_weights(model.get_weights())
-		
-		return model_copy
-	
-	def create_target(self, state, action, reward, state_next, done):
-		""" 
-        Function to calculate the target with double DQN, 
-        target-network or without target network and returning the updated estimated Q-values.
-        """
-		target = reward
-		if self.double_clipped:
-			if not done:
-				# Bellman Equation
-				target = reward + self.gamma * min(self.predict(state_next, self.q_target_net)[0][action], 
-                                                   self.predict(state_next, self.q_net)[0][action])
-            # using the DQN-agents predict function to estimate the Q-values 
-			target_f = self.predict(state, self.q_target_net)
-		elif self.use_target:
-			if not done:
-				# Bellman Equation
-				target = reward + self.gamma * np.amax(self.predict(state_next, self.q_target_net)[0])
-			# using the DQN-agents predict function to estimate the Q-values
-			target_f = self.predict(state, self.q_target_net)
-		else:
-			if not done:
-				# Bellman Equation
-				target = reward + self.gamma * np.amax(self.predict(state_next, self.q_net)[0])
-			# using the DQN-agents predict function to estimate the Q-values
-			target_f = self.predict(state, self.q_net)
-		target_f[0][action] = target
-		
-		return target_f
+    # --- exploration schedule -------------------------------------------
+    # Linear decay from epsilon_start to epsilon_min over `decay_fraction` of
+    # total training, updated ONCE PER ENV STEP in the training loop. The old
+    # code decayed inside the replay step (every timestep), collapsing epsilon
+    # to the minimum within the first episode.
+    def set_epsilon_schedule(self, total_steps, decay_fraction=0.6):
+        self.eps_decay_steps = max(1, int(total_steps * decay_fraction))
 
-	def act(self, state):
-		state = np.expand_dims(state, axis=0)  # Adds batch_size dimension, resulting in shape (1, state_size, 5)
-		# Use a single condition for exploration vs. exploitation
-		if not self.is_eval and np.random.uniform(0, 1) <= self.epsilon:
-			# Random action for exploration
-			return random.randint(0, self.action_size - 1)  # More efficient than randrange
-		
-		options = self.model(state, training=False).numpy()  # Avoid unnecessary gradient tracking		return np.argmax(options[0])
-		return int(np.argmax(options[0]))  # Directly return as an int for efficiency
+    def update_epsilon(self, global_step):
+        frac = min(1.0, global_step / self.eps_decay_steps)
+        self.epsilon = self.epsilon_start + frac * (self.epsilon_min - self.epsilon_start)
 
-	def expReplay(self, batch_size):
-		#import pdb;pdb.set_trace()
-		# Randomly sample batch_size indices from the memory array
-		#sampled_indices = random.sample(range(l), batch_size)
-		random_idxs = np.random.choice(len(self.memory), batch_size, replace=False )
-		# Use the sampled indices to append to the mini_batch
-		#for i in sampled_indices:
-		#	mini_batch.append(self.memory[i])
-		
+    # --- policy ----------------------------------------------------------
+    def act(self, obs, greedy=False):
+        """Epsilon-greedy action. `greedy=True` forces the learned policy,
+        used for validation/evaluation so results are never polluted by
+        exploration."""
+        if not greedy and not self.is_eval and np.random.rand() <= self.epsilon:
+            return random.randrange(self.action_size)
+        market, pos = obs
+        q = self.model.predict_on_batch([market[None, ...], pos[None, ...]])
+        return int(np.argmax(np.asarray(q)[0]))
 
-		#for state, action, reward, next_state, done in mini_batch:
-		for batch_idx in random_idxs:
-			# get the values
-			state, action, reward, next_state, done = self.memory[batch_idx]
-			if done:
-				target = reward
-			else:
-				# temporal difference learning TD-target
-				#target = reward + self.gamma * np.amax(self.model(next_state)[0]) # model.predict
-				# using target model for prediction
-				next_state = np.expand_dims(next_state, axis=0)  # Adds batch_size dimension, resulting in shape (1, state_size, 5)
-				target = reward + self.gamma * np.amax(self.target_model(next_state, training=False)[0]) 
-			
-			state = np.expand_dims(state, axis=0)
-			target_f = self.model(state, training=False).numpy() # model.predict
-			target_f[0][action] = target
-			self.model.fit(state, target_f, epochs=1, verbose=0)
+    # --- learning --------------------------------------------------------
+    def learn(self, buffer, batch_size):
+        """One vectorized Double-DQN update over a sampled minibatch."""
+        m, p, a, r, nm, npv, d = buffer.sample(batch_size)
 
-		if self.epsilon > self.epsilon_min:
-			self.epsilon *= self.epsilon_decay 
+        # Double DQN: online net picks the next action, target net values it.
+        next_online = np.asarray(self.model.predict_on_batch([nm, npv]))
+        next_actions = np.argmax(next_online, axis=1)
+        next_target = np.asarray(self.target_model.predict_on_batch([nm, npv]))
+        q_next = next_target[np.arange(batch_size), next_actions]
+
+        targets = r + self.gamma * q_next * (1.0 - d)   # 0 bootstrap on terminal
+
+        q = np.asarray(self.model.predict_on_batch([m, p]))
+        q[np.arange(batch_size), a] = targets            # only the taken action's target changes
+        self.model.train_on_batch([m, p], q)

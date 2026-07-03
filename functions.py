@@ -1,74 +1,145 @@
+"""Data loading, feature normalization and windowing utilities.
+
+The loader is robust to the different CSV layouts in this repo (SundPGI, SAP,
+iShares): it selects the feature columns *by name*, strips BOMs, and parses
+thousands-separated / quoted Volume values. Normalization statistics are fit on
+the TRAINING data only and reused for validation/test, which avoids the
+window-local MinMax leakage the previous version had.
+"""
+
+import json
 import numpy as np
+import pandas as pd
 
-# prints formatted price
+# Feature columns fed to the network (selected by name, order preserved).
+DEFAULT_FEATURES = ["Close", "Volume", "ROC12", "MFI14", "FVolatility"]
+
+# Per-feature transform applied before the network sees it:
+#   logreturn_z : log return of the level, then z-score (scale-free price signal)
+#   log_z       : log1p(x), then z-score (compresses heavy-tailed volume)
+#   z           : plain z-score using train-set mean/std
+#   div100      : divide by 100 (bounded 0-100 oscillators -> ~0-1, no stats)
+FEATURE_TRANSFORMS = {
+    "Close": "logreturn_z",
+    "Volume": "log_z",
+    "ROC12": "z",
+    "MFI14": "div100",
+    "FVolatility": "z",
+}
+
+
 def formatPrice(n):
-	return ("-$" if n < 0 else "$") + "{0:.2f}".format(abs(n))
-
-# returns the vector containing stock data from a fixed file
-def getStockDataVec(key, test=False):
-	data_vec = []
-	if test:
-		lines = open("test_data/" + key, "r").read().splitlines()
-	else:
-		lines = open("train_data/" + key, "r").read().splitlines()
-	# extract data-values Close,Volume,ROC12,MFI14,FVolatility from line (len=5)	
-	data_vec = [[float(elem)] for line in lines[1:] for elem in line.split(",")[4:]]
-	data_vec = np.asarray(data_vec, dtype=np.float64)
-	
-	# reshaping into a np.matrix (rows, data) == (days, values)
-	return np.reshape(data_vec, (len(data_vec)//5, 5))
-
-# returns the sigmoid
-def sigmoid(x):
-	return 1 / (1 + np.exp(-x))
-
-# This estimator scales and translates each feature individually such that it is in the given range 
-# on the training set, e.g. between zero and one or -1 and 1
-# input: x = 1d ndarray
-def MinMaxScale(x, r_min=-1, r_max=0):
-	X_std = (x - x.min()) / (x.max() - x.min())
-	# return scaled
-	return X_std * (r_max - r_min) + r_min 
-
-# returns an an n-day state representation ending at time t
-# data is np.ndarray(days, values )  with values =5 
-# num_len = 5 is the lenght of one day "tuple" containing 5 measurements from the stock at one day
-def getState(data, t, n):
-	#import pdb; pdb.set_trace()
-	num_len = 5
-	d = t - n + 1
-	if d >= 0:
-		block = data[d:(t +1)]
-	else:
-		# pad with 0
-		#pad = np.zeros((-d*num_len, num_len))
-		pad = np.zeros((-d, num_len))
-		#pad = np.reshape(pad,(-d,num_len))
-		block = np.concatenate((pad, data[0:(t + 1)]))
-		#Calculate the differences and apply sigmoid
-		
-
-	# calculate differences between measurements along axis 0 (per day diff)
-	# only for "Close" and "Volume" in first and second column
-	# Close,Volume,ROC12,MFI14,FVolatility
-	block = block.T # transpose
-	cl_vol = block[:2]
-	cl_vol_dif = np.diff(cl_vol)
-
-	# concatenate to one flat vector in O(n), ready for NN input
-	##result = np.concatenate((cl_vol_dif.flatten(), block[2:].flatten()))
-
-	# standardize Close, Vol, Roc and MFI
-	cl_std = MinMaxScale(cl_vol_dif[0])
-	vol_std = MinMaxScale(cl_vol_dif[1])
-	roc_std = MinMaxScale(block[2])
-	MFI_std = MinMaxScale(block[3])
-
-	# concatenate to flattened vector as result
-	# import pdb;pdb.set_trace()
-	result = np.concatenate((cl_std, vol_std,roc_std, MFI_std, block[4]), axis=0)
+    """Human-readable signed euro amount."""
+    return ("-€" if n < 0 else "€") + "{0:.2f}".format(abs(n))
 
 
-	# standardize 
-	# result = sigmoid(differences)
-	return result
+def load_ohlcv(path):
+    """Read a stock CSV into a DataFrame with clean column names.
+
+    `encoding='utf-8-sig'` drops the BOM present in SAP.csv, and
+    `thousands=','` turns quoted values like "1,529,638" into real numbers.
+    """
+    # index_col=False stops pandas from silently promoting the first data column
+    # to the row index when a row has more fields than the header. SAP.csv has a
+    # trailing comma (11 fields vs 10 headers); without this every named column
+    # would shift by one (Close would actually hold High, etc.).
+    df = pd.read_csv(path, thousands=",", encoding="utf-8-sig", index_col=False)
+    df.columns = [str(c).strip() for c in df.columns]
+    # drop spurious empty / "Unnamed" trailing columns produced by the extra comma
+    df = df.loc[:, [c for c in df.columns if c and not c.startswith("Unnamed")]]
+    return df
+
+
+def load_features(key, features, test=False):
+    """Load a dataset and return (DataFrame, raw_close_prices).
+
+    Raises a clear error if a requested feature column is absent (e.g. the
+    iShares file has no ROC12/MFI14/FVolatility columns).
+    """
+    path = ("test_data/" if test else "train_data/") + key
+    df = load_ohlcv(path)
+    missing = [f for f in features if f not in df.columns]
+    if missing:
+        raise ValueError(
+            f"{key} is missing feature columns {missing}. "
+            f"Available columns: {list(df.columns)}"
+        )
+    close = df["Close"].to_numpy(dtype=np.float64)
+    return df, close
+
+
+class FeatureScaler:
+    """Fits per-feature normalization on training data and applies it elsewhere.
+
+    Persisted to JSON next to the model so evaluation uses identical statistics.
+    """
+
+    def __init__(self, features):
+        self.features = list(features)
+        self.transforms = [FEATURE_TRANSFORMS.get(f, "z") for f in self.features]
+        self.mean = {}
+        self.std = {}
+
+    @staticmethod
+    def _pretransform(kind, x):
+        """Apply the non-parametric part of a transform (before z-scoring)."""
+        x = np.asarray(x, dtype=np.float64)
+        if kind == "logreturn_z":
+            lr = np.zeros_like(x)
+            lr[1:] = np.log(x[1:] / x[:-1])   # first day has no prior -> 0
+            return lr
+        if kind == "log_z":
+            return np.log1p(np.clip(x, 0, None))
+        if kind == "div100":
+            return x / 100.0
+        return x  # "z" / unknown: leave raw, z-scored below
+
+    def fit(self, df):
+        """Compute mean/std for z-scored features using TRAIN data only."""
+        for f, kind in zip(self.features, self.transforms):
+            pt = self._pretransform(kind, df[f].to_numpy())
+            if kind == "z" or kind.endswith("_z"):
+                self.mean[f] = float(np.mean(pt))
+                self.std[f] = float(np.std(pt) + 1e-8)   # guard against zero variance
+        return self
+
+    def transform(self, df):
+        """Return a normalized (T, n_feat) float32 matrix."""
+        cols = []
+        for f, kind in zip(self.features, self.transforms):
+            pt = self._pretransform(kind, df[f].to_numpy())
+            if f in self.mean:                             # z-scored feature
+                pt = (pt - self.mean[f]) / self.std[f]
+            cols.append(pt.astype(np.float32))
+        return np.stack(cols, axis=1)
+
+    def save(self, path):
+        with open(path, "w") as fh:
+            json.dump(
+                {"features": self.features, "transforms": self.transforms,
+                 "mean": self.mean, "std": self.std}, fh, indent=2)
+
+    @classmethod
+    def load(cls, path):
+        with open(path) as fh:
+            d = json.load(fh)
+        s = cls(d["features"])
+        s.transforms = d["transforms"]
+        s.mean = d["mean"]
+        s.std = d["std"]
+        return s
+
+
+def get_window(matrix, t, window):
+    """Return the `window` feature rows ending at index `t` (inclusive).
+
+    Left zero-pads at the start of the series so the shape is always
+    (window, n_feat). This is the market half of the observation.
+    """
+    start = t - window + 1
+    if start >= 0:
+        block = matrix[start:t + 1]
+    else:
+        pad = np.zeros((-start, matrix.shape[1]), dtype=matrix.dtype)
+        block = np.concatenate((pad, matrix[0:t + 1]), axis=0)
+    return block.astype(np.float32)
