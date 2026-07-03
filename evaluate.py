@@ -42,14 +42,17 @@ def evaluate(agent, env, plotting=False, title="model", save_path=None, verbose=
             if verbose:
                 print("Sell @ " + formatPrice(info["price"]))
 
-    realized = info["realized_pnl"]
+    gross = info["realized_pnl"]
+    cost = info["total_cost"]
+    net = gross - cost                                # profit after transaction costs
     invested = sum(price for _, price in buy_signals)
-    return_pct = 100.0 * realized / (invested + 1e-9)
+    return_pct = 100.0 * net / (invested + 1e-9)
     r = np.asarray(rewards)
     sharpe = float(np.mean(r) / (np.std(r) + 1e-9)) if len(r) else 0.0
 
     print("--------------------------------")
-    print(f"{title}: realized {formatPrice(realized)} | return {return_pct:.2f}% "
+    print(f"{title}: net {formatPrice(net)} (gross {formatPrice(gross)}, "
+          f"costs {formatPrice(cost)}) | return {return_pct:.2f}% "
           f"| trades {env.trade_count} | reward Sharpe {sharpe:.3f}")
     print("--------------------------------")
 
@@ -64,7 +67,7 @@ def evaluate(agent, env, plotting=False, title="model", save_path=None, verbose=
             sx, sy = zip(*sell_signals)
             plt.scatter(sx, sy, marker="v", color="r", label="Sell")
         plt.legend(loc="upper left",
-                   title=f"Realized: {formatPrice(realized)} ({return_pct:.1f}%)")
+                   title=f"Net: {formatPrice(net)} ({return_pct:.1f}%, {env.trade_count} trades)")
         plt.xlabel("Trading days")
         plt.ylabel("Close price")
         plt.title(title)
@@ -76,8 +79,8 @@ def evaluate(agent, env, plotting=False, title="model", save_path=None, verbose=
             plt.show()
         plt.close()
 
-    return {"realized_pnl": realized, "return_pct": return_pct,
-            "sharpe": sharpe, "trades": env.trade_count}
+    return {"realized_pnl": gross, "net_pnl": net, "cost": cost,
+            "return_pct": return_pct, "sharpe": sharpe, "trades": env.trade_count}
 
 
 def main():
@@ -93,11 +96,15 @@ def main():
     agent = Agent(model_name=args.model_name, is_eval=True)
     window = int(agent.window)
 
-    # models are saved as "<base><episode>.keras"; the scaler is saved once as
-    # "<base>_scaler.json". Strip the ".keras" suffix and trailing episode
-    # digits to recover the base name.
+    # scaler is saved once as "<base>_scaler.json"; recover <base> from the model
+    # name. "_best"/"_last" are stable checkpoint names (base may end in a digit,
+    # e.g. smoke2_best -> smoke2); a bare trailing number is a legacy per-episode
+    # checkpoint (smoke199 -> smoke).
     base = args.model_name[:-6] if args.model_name.endswith(".keras") else args.model_name
-    base = base.rstrip("0123456789")
+    if base.endswith("_best") or base.endswith("_last"):
+        base = base[:-5]
+    else:
+        base = base.rstrip("0123456789")
     scaler = FeatureScaler.load(f"models/{base}_scaler.json")
 
     df, close = load_features(args.stock, scaler.features, test=args.test)

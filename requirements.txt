@@ -6,4 +6,5 @@ tensorflow[and-cuda]>=2.16   # drop "[and-cuda]" for a CPU-only install
 numpy>=2.0
 pandas>=2.0
 matplotlib>=3.7
-wandb>=0.16
+wandb>=0.16          # optional: experiment logging (train.py runs without it)
+yfinance>=0.2        # optional: only needed by scrape_data.py

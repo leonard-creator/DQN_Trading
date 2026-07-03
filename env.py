@@ -45,7 +45,8 @@ class TradingEnv:
         self.t = 0
         self.position = 0
         self.avg_cost = 0.0
-        self.realized_pnl = 0.0
+        self.realized_pnl = 0.0    # gross realized trading P&L (excludes costs)
+        self.total_cost = 0.0      # cumulative transaction costs paid
         self.trade_count = 0
         self.A = 0.0                              # EMA of returns  (1st moment)
         self.B = 0.0                              # EMA of returns^2 (2nd moment)
@@ -116,6 +117,7 @@ class TradingEnv:
         # hold (action 0) or an invalid trade is a no-op
         if traded:
             self.trade_count += 1
+            self.total_cost += self.cost
 
         # Per-step P&L: mark-to-market of the position we now hold over the
         # next price move, minus the flat cost, minus optional inventory penalty.
@@ -130,10 +132,13 @@ class TradingEnv:
         self.t += 1
         done = self.t >= self.length
 
-        equity = self.realized_pnl + self.position * (next_price - self.avg_cost)
+        # net equity = realized P&L net of costs + open unrealized position value
+        equity = self.realized_pnl - self.total_cost + self.position * (next_price - self.avg_cost)
         info = {
             "price": price, "traded": traded, "trade_type": trade_type,
             "position": self.position, "avg_cost": self.avg_cost,
-            "realized_pnl": self.realized_pnl, "step_pnl": R, "equity": equity,
+            "realized_pnl": self.realized_pnl, "total_cost": self.total_cost,
+            "net_pnl": self.realized_pnl - self.total_cost,   # profit after transaction costs
+            "step_pnl": R, "equity": equity,
         }
         return self._obs(), reward, done, info
