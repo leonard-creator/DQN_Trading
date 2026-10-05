@@ -1,0 +1,8 @@
+# Baseline "buy_and_hold" (PROTOCOL §6). Merged on top of config/protocol.yaml.
+# Evaluated on the training tickers (primary), the leave-out tickers and the
+# single-asset reference, over all 5 folds x 10 seeds x the cost sweep.
+name: baseline_buy_and_hold
+kind: baseline
+policy: buy_and_hold
+policy_params: {}
+eval_sets: [train, leave_out, single]

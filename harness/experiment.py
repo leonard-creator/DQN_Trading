@@ -1,0 +1,306 @@
+"""run_experiment(config, seeds): the single entry point of the harness.
+
+One call =
+    for every fold (walk-forward, PROTOCOL §4)
+      for every seed (PROTOCOL §5)
+        policy -> exposures for every evaluation ticker        (trained once per seed x fold)
+        for every evaluation set (train tickers, leave-out tickers, single asset)
+          for every cost level (0 / 5 / 10 / 25 bp)
+            backtest each ticker -> equal-weight portfolio -> metrics
+    -> experiments/runs/<trial_id>/   metrics.csv, returns_*.csv, config.yaml, summary.json
+    -> one appended row in experiments/trials.csv
+
+Policies
+--------
+A policy is any object with
+
+    policy.exposures(prices, fold, seed, cfg, tickers) -> {ticker: exposure array}
+
+where `prices` is {ticker: DataFrame} (history up to the end of the block,
+never into the locked test period) and the exposure array has one entry per
+bar of that ticker. `BaselinePolicy` wraps harness/baselines.py. The DQN agent
+(milestone M2) implements the same method: it trains on the purged training
+range of the fold (harness.splits.fold_ranges) and then acts greedily.
+"""
+
+import datetime as _dt
+import json
+import os
+from dataclasses import dataclass, field
+
+import numpy as np
+import pandas as pd
+import yaml
+
+from harness import backtest as bt
+from harness import metrics as mt
+from harness import stats as st
+from harness import trials as tr
+from harness.baselines import BASELINES, DETERMINISTIC
+from harness.config import code_hash, config_hash, load_config, repo_path
+from harness.data import load_prices, ticker_sets
+from harness.splits import block_positions, folds_from_config
+
+
+# ---------------------------------------------------------------------------
+# policies
+# ---------------------------------------------------------------------------
+class BaselinePolicy:
+    """Adapter from the BASELINES registry to the policy interface."""
+
+    def __init__(self, name, params=None):
+        if name not in BASELINES:
+            raise KeyError(f"unknown baseline '{name}', choose from {sorted(BASELINES)}")
+        self.name = name
+        self.params = params or {}
+        self.deterministic = name in DETERMINISTIC
+
+    def exposures(self, prices, fold, seed, cfg, tickers):
+        out = {}
+        for t in tickers:
+            df = prices[t]
+            dec = block_positions(df.index, fold.val_start, fold.val_end) - 1
+            out[t] = BASELINES[self.name](df["Close"].to_numpy(), dec, seed, t, fold.name, cfg, self.params)
+        return out
+
+
+def make_policy(cfg):
+    """Build the policy named in the config. Agent policies are added in M2."""
+    if cfg.get("kind", "baseline") == "baseline":
+        return BaselinePolicy(cfg["policy"], cfg.get("policy_params"))
+    raise NotImplementedError(f"policy kind '{cfg.get('kind')}' is not implemented yet")
+
+
+# ---------------------------------------------------------------------------
+# result container
+# ---------------------------------------------------------------------------
+@dataclass
+class ExperimentResult:
+    cfg: dict
+    trial_id: str
+    metrics: pd.DataFrame          # one row per (eval_set, cost_bps, seed, fold)
+    returns: dict                  # {(eval_set, cost_bps): DataFrame dates x seeds of portfolio net returns}
+    summary: dict = field(default_factory=dict)
+    output_dir: str = ""
+
+    def runs(self, eval_set, cost_bps):
+        """Per-(seed, fold) metric rows of one evaluation set and cost level."""
+        m = self.metrics
+        return m[(m["eval_set"] == eval_set) & (m["cost_bps"] == cost_bps)]
+
+
+# ---------------------------------------------------------------------------
+# main entry point
+# ---------------------------------------------------------------------------
+def run_experiment(config, seeds=None, eval_sets=None, cost_levels=None, folds=None,
+                   policy=None, unlock=None, log=True, notes="", out_root=None, verbose=True):
+    """Evaluate one configuration over seeds x folds x eval sets x cost levels.
+
+    config      : path to an experiment YAML, or an already merged config dict
+    seeds       : iterable of ints (default: PROTOCOL seeds 0-9)
+    eval_sets   : list of names from harness.data.ticker_sets; the FIRST one is
+                  the primary set reported in trials.csv (default: config
+                  'eval_sets' or ['train'])
+    cost_levels : list of c in bp (default: the PROTOCOL sweep); the primary
+                  cost must be included
+    folds       : list of harness.splits.Fold (default: the 5 development folds)
+    policy      : policy object (default: built from the config)
+    unlock      : test-period token (only scripts/final_test.py passes this)
+    log         : append a row to experiments/trials.csv and write outputs
+    """
+    cfg = load_config(config) if isinstance(config, str) else config
+    ev = cfg["evaluation"]
+    seeds = list(ev["seeds"] if seeds is None else seeds)
+    eval_sets = list(eval_sets or cfg.get("eval_sets") or ["train"])
+    costs = ev["costs"]
+    cost_levels = list(costs["sweep_bps"] if cost_levels is None else cost_levels)
+    primary_cost = costs["primary_bps"]
+    if primary_cost not in cost_levels:
+        cost_levels.append(primary_cost)
+    folds = list(folds or folds_from_config(cfg))
+    policy = policy or make_policy(cfg)
+    bpy = cfg["data"]["bars_per_year"]
+
+    sets = ticker_sets(cfg)
+    tickers_by_set = {s: sets[s] for s in eval_sets}
+    all_eval = sorted({t for ts in tickers_by_set.values() for t in ts})
+    prices = load_prices(all_eval, cfg, unlock=unlock)
+
+    rows = []
+    daily = {}                                 # (eval_set, cost, seed) -> list of Series (one per fold)
+    cache = {}                                 # deterministic baselines: fold -> exposures
+    for fold in folds:
+        # never hand a policy more history than the end of the evaluation block
+        fold_prices = {t: df[df.index <= fold.val_end] for t, df in prices.items()}
+        for seed in seeds:
+            if getattr(policy, "deterministic", False) and fold.name in cache:
+                expo = cache[fold.name]
+            else:
+                expo = policy.exposures(fold_prices, fold, seed, cfg, all_eval)
+                if getattr(policy, "deterministic", False):
+                    cache[fold.name] = expo
+            for c in cost_levels:
+                rate = bt.cost_rate(c, costs["half_spread_bps"])
+                frames = {}
+                for t in all_eval:
+                    df = fold_prices[t]
+                    pos = block_positions(df.index, fold.val_start, fold.val_end)
+                    if len(pos) == 0:
+                        continue
+                    res = bt.backtest(df["Close"].to_numpy(), expo[t], pos, rate)
+                    frames[t] = bt.to_frame(res, df.index[pos])
+                if not frames:
+                    raise ValueError(
+                        f"fold {fold.name}: no price data between {fold.val_start.date()} and "
+                        f"{fold.val_end.date()} (is this the locked test period?)")
+                for es, ts in tickers_by_set.items():
+                    sub = {t: frames[t] for t in ts if t in frames}
+                    port = bt.portfolio(sub)
+                    m = mt.portfolio_metrics(port, sub, bpy)
+                    rows.append({"eval_set": es, "cost_bps": c, "seed": seed, "fold": fold.name, **m})
+                    daily.setdefault((es, c, seed), []).append(port["net"])
+        if verbose:
+            print(f"  [{cfg.get('name', policy.__class__.__name__)}] fold {fold.name} done "
+                  f"({len(seeds)} seeds, {len(cost_levels)} cost levels)")
+
+    metrics = pd.DataFrame(rows)
+    returns = {}
+    for (es, c, seed), parts in daily.items():
+        returns.setdefault((es, c), {})[seed] = pd.concat(parts).sort_index()
+    returns = {k: pd.DataFrame(v) for k, v in returns.items()}
+
+    result = ExperimentResult(cfg=cfg, trial_id="", metrics=metrics, returns=returns)
+    result.summary = summarize(result, eval_sets, cost_levels, primary_cost)
+    if log:
+        _persist(result, eval_sets[0], primary_cost, seeds, folds, notes, out_root)
+    return result
+
+
+def summarize(result, eval_sets, cost_levels, primary_cost):
+    """Median/IQR over seeds x folds for every (eval_set, cost) + per-period Sharpe."""
+    out = {}
+    for es in eval_sets:
+        for c in cost_levels:
+            runs = result.runs(es, c)
+            agg = mt.aggregate(runs)
+            # per-period Sharpe of each seed's concatenated out-of-sample series;
+            # the median over seeds is what the trial log stores as sr_pp
+            r = result.returns[(es, c)]
+            sr = [mt.return_metrics(r[s].dropna().to_numpy())["sharpe_pp"] for s in r.columns]
+            agg["sr_pp_median"] = float(np.median(sr))
+            agg["fold_sharpe_median"] = runs.groupby("fold")["sharpe"].median().round(4).to_dict()
+            out[f"{es}@{c}bp"] = agg
+    return out
+
+
+def _persist(result, primary_set, primary_cost, seeds, folds, notes, out_root):
+    cfg = result.cfg
+    chash = config_hash(cfg)
+    stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    result.trial_id = f"{stamp}_{cfg.get('name', 'run')}_{chash}"
+    out_dir = os.path.join(out_root or repo_path("experiments", "runs"), result.trial_id)
+    os.makedirs(out_dir, exist_ok=True)
+    result.output_dir = out_dir
+
+    with open(os.path.join(out_dir, "config.yaml"), "w") as fh:
+        yaml.safe_dump(cfg, fh, sort_keys=False)
+    result.metrics.to_csv(os.path.join(out_dir, "metrics.csv"), index=False)
+    for (es, c), df in result.returns.items():
+        df.to_csv(os.path.join(out_dir, f"returns_{es}_c{c}.csv"), index_label="Date")
+    with open(os.path.join(out_dir, "summary.json"), "w") as fh:
+        json.dump(result.summary, fh, indent=2, default=float)
+
+    s = result.summary[f"{primary_set}@{primary_cost}bp"]
+    tr.append_trial({
+        "timestamp": _dt.datetime.now().isoformat(timespec="seconds"),
+        "trial_id": result.trial_id,
+        "kind": cfg.get("kind", "baseline"),
+        "name": cfg.get("name", ""),
+        "policy": cfg.get("policy", ""),
+        "config_hash": chash,
+        "code_hash": code_hash(),
+        "git_commit": tr.git_commit(),
+        "protocol_version": cfg.get("protocol_version", ""),
+        "seeds": f"{min(seeds)}-{max(seeds)} (n={len(seeds)})",
+        "folds": ",".join(f.name for f in folds),
+        "eval_set": primary_set,
+        "cost_bps": primary_cost,
+        "n_runs": len(seeds) * len(folds),
+        "sharpe_median": s["sharpe_median"],
+        "sharpe_iqr": s["sharpe_iqr"],
+        "cagr_median": s["cagr_median"],
+        "max_drawdown_median": s["max_drawdown_median"],
+        "turnover_median": s["turnover_median"],
+        "sr_pp": s["sr_pp_median"],
+        "fold_metrics": s["fold_sharpe_median"],
+        "output_dir": os.path.relpath(out_dir, repo_path()),
+        "versions": tr.library_versions(),
+        "notes": notes,
+    })
+
+
+# ---------------------------------------------------------------------------
+# comparisons (H1) and selection statistics
+# ---------------------------------------------------------------------------
+def compare_to_baselines(agent, baselines, eval_set="train", cost_bps=None,
+                         metric="sharpe", n_permutations=None, seed=0):
+    """Paired permutation tests of agent vs each baseline, Holm-corrected.
+
+    agent     : ExperimentResult of the agent
+    baselines : {name: ExperimentResult}; must cover the same folds.
+                Pairs are matched on (seed, fold) when the baseline was run
+                with the agent's seeds. A baseline run with a single seed is
+                matched on fold only (valid for deterministic baselines, whose
+                value is the same for every seed).
+    Returns a DataFrame: baseline, mean_diff, p_value, p_holm, n_pairs.
+    """
+    cfg = agent.cfg
+    cost_bps = cfg["evaluation"]["costs"]["primary_bps"] if cost_bps is None else cost_bps
+    n_perm = n_permutations or cfg["evaluation"]["statistics"]["n_permutations"]
+    a = agent.runs(eval_set, cost_bps)[["seed", "fold", metric]]
+    out = []
+    for name, res in baselines.items():
+        b = res.runs(eval_set, cost_bps)[["seed", "fold", metric]]
+        if set(a["seed"]) <= set(b["seed"]):
+            merged = a.merge(b, on=["seed", "fold"], suffixes=("_a", "_b"))
+        elif b["seed"].nunique() == 1:
+            merged = a.merge(b.drop(columns="seed"), on="fold", suffixes=("_a", "_b"))
+        else:
+            raise ValueError(f"baseline '{name}' was run with seeds that do not match the agent's")
+        test = st.permutation_test(merged[f"{metric}_a"] - merged[f"{metric}_b"], n_perm, seed)
+        out.append({"baseline": name, **test})
+    df = pd.DataFrame(out)
+    df["p_holm"] = st.holm(df["p_value"].to_numpy()) if len(df) else []
+    return df
+
+
+def seed_mean_returns(result, eval_set, cost_bps):
+    """Daily portfolio returns averaged over seeds (one series per configuration)."""
+    return result.returns[(eval_set, cost_bps)].mean(axis=1)
+
+
+def pbo_over(results, eval_set="train", cost_bps=None, n_blocks=None):
+    """PBO via CSCV across several configurations' out-of-sample returns."""
+    cfg = next(iter(results.values())).cfg
+    cost_bps = cfg["evaluation"]["costs"]["primary_bps"] if cost_bps is None else cost_bps
+    n_blocks = n_blocks or cfg["evaluation"]["statistics"]["pbo_blocks"]
+    mat = pd.concat({k: seed_mean_returns(r, eval_set, cost_bps) for k, r in results.items()},
+                    axis=1).dropna()
+    return st.pbo_cscv(mat.to_numpy(), n_blocks)
+
+
+def deflated_sharpe_of(result, eval_set="train", cost_bps=None, n_trials=None, var_sr=None):
+    """Deflated Sharpe ratio of one configuration (median over its seeds).
+
+    Each seed's concatenated out-of-sample daily returns get their own
+    deflated Sharpe; the median over seeds is reported. N_trials and the
+    cross-trial Sharpe variance come from experiments/trials.csv unless given.
+    """
+    cfg = result.cfg
+    cost_bps = cfg["evaluation"]["costs"]["primary_bps"] if cost_bps is None else cost_bps
+    n = tr.n_trials() if n_trials is None else n_trials
+    v = tr.sharpe_variance() if var_sr is None else var_sr
+    r = result.returns[(eval_set, cost_bps)]
+    per_seed = [st.deflated_sharpe(r[s].dropna().to_numpy(), n, v)["deflated_sharpe"] for s in r.columns]
+    return {"deflated_sharpe_median": float(np.nanmedian(per_seed)), "per_seed": per_seed,
+            "n_trials": n, "var_sr": v}

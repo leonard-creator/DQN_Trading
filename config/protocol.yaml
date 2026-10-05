@@ -1,0 +1,78 @@
+# Machine-readable copy of PROTOCOL.md v1.0 (approved 2026-10-05).
+# PROTOCOL v1.1 only added clarifications (§10a); no value here changed, so
+# protocol_version stays "1.0" and existing config hashes remain valid.
+#
+# Every number the evaluation harness uses comes from this file, so the
+# protocol and the code cannot drift apart. Do NOT edit values here without a
+# dated entry in PROTOCOL.md §10. Changing a value changes the config hash of
+# every experiment that loads it, so old and new trials stay distinguishable.
+
+protocol_version: "1.0"
+
+# --- data (PROTOCOL §3) -----------------------------------------------------
+data:
+  source: yfinance              # free, no API key; auto_adjust=True (split/dividend adjusted)
+  frequency: 1d                 # daily bars only; intraday history is not available for free (W7)
+  raw_dir: data/raw             # one CSV per ticker, FULL history, never pre-split
+  download_start: "2000-01-01"
+  download_end: "2026-09-30"    # inclusive
+  usable_start: "2007-07-02"    # first bar that may enter any train/eval block; earlier bars = warm-up only
+  bars_per_year: 252            # annualisation factor for daily data
+
+# --- universe (PROTOCOL §2) ---------------------------------------------------
+universe:
+  buckets:
+    us_equity:   [SPY, QQQ, IWM, DIA, MDY]
+    us_sector:   [XLB, XLE, XLF, XLI, XLK, XLP, XLU, XLV, XLY]
+    intl_equity: [EFA, EEM, EWJ, EWG, EWU, EWZ, EWA, EWC, FXI, ^GDAXI]
+    bonds:       [TLT, IEF, LQD, TIP]
+    real_estate: [IYR]
+    commodities: [GLD, SLV, USO, DBC]
+  # Never used for training or hyper-parameter selection (only M4 go/no-go and M5).
+  # Drawn with numpy.random.default_rng(20261005), stratified per bucket.
+  leave_out: [QQQ, XLE, XLF, EEM, EWZ, IEF, SLV]
+  single_asset: ^GDAXI          # reference asset for milestone M2
+  context: [^VIX]               # features only, never traded; joined as-of with a one-bar lag
+
+# --- splits (PROTOCOL §4) -----------------------------------------------------
+splits:
+  test_start: "2023-10-02"      # frozen test period start; locked (see §9 / scripts/final_test.py)
+  test_end: "2026-09-30"
+  dev_start: "2007-07-02"
+  dev_end: "2023-09-29"
+  # Anchored (expanding) walk-forward: every fold trains from dev_start up to
+  # its validation start (minus the purge).
+  folds:
+    - {name: F1, val_start: "2014-01-02", val_end: "2015-12-31"}
+    - {name: F2, val_start: "2016-01-04", val_end: "2017-12-29"}
+    - {name: F3, val_start: "2018-01-02", val_end: "2019-12-31"}
+    - {name: F4, val_start: "2020-01-02", val_end: "2021-12-31"}
+    - {name: F5, val_start: "2022-01-03", val_end: "2023-09-29"}
+  # Purge P = window + max reward horizon, in bars, removed from training at every
+  # train->eval boundary. The agent config supplies its window and horizon; this
+  # is the default used when it does not.
+  purge_window: 20
+  purge_horizon: 5
+  embargo_bars: 10              # only binds when training data follows an eval block
+  inner_val_bars: 252           # last N bars of each fold's training range: checkpoint selection only
+
+# --- evaluation (PROTOCOL §5-§8) -----------------------------------------------
+evaluation:
+  seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+  max_configurations: 50        # trial budget for agent configurations
+  position_levels: 4            # K: exposure in {0, 1/K, ..., 1} of capital, long-only
+  allow_short: false
+  costs:
+    primary_bps: 10             # c used for H1
+    half_spread_bps: 1          # added to c on every rebalance
+    sweep_bps: [0, 5, 10, 25]
+  baselines:
+    momentum_lookback: 60       # pre-declared; other lookbacks are descriptive only
+    momentum_descriptive: [20, 120, 252]
+    macd: {fast: 12, slow: 26, signal: 9}
+  statistics:
+    n_permutations: 10000
+    alpha: 0.05
+    pbo_blocks: 16              # S for CSCV (must be even)
+    deflated_sharpe_threshold: 0.95
+    pbo_threshold: 0.5

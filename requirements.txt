@@ -1,10 +1,17 @@
-# DQN Trader dependencies.
-# TF >= 2.16 ships Keras 3 and supports NumPy 2.x (matches scvi-env's numpy).
-# Models are saved as portable single-file ".keras" archives, so no SavedModel
-# directory / NumPy-1.x pinning is needed.
-tensorflow[and-cuda]>=2.16   # drop "[and-cuda]" for a CPU-only install
-numpy>=2.0
+# DQN Trader dependencies, matching the tested `dqn_ml` conda env (2026-10-05).
+#
+# TensorFlow 2.15 is built against CUDA 12.2 / cuDNN 8.9. The "[and-cuda]" extra
+# installs those libraries as pip wheels, so no system CUDA (and no sudo) is
+# needed. Without it, TF silently falls back to CPU. Drop "[and-cuda]" for a
+# CPU-only install.
+tensorflow[and-cuda]==2.15.1
+keras==2.15.0            # bundled with TF 2.15 (Keras 2 API, .keras archives)
+numpy>=1.26,<2.0         # TF 2.15 does not support NumPy 2
+protobuf>=3.20.3,<5      # TF 2.15 breaks with protobuf >= 5 ("MessageFactory.GetPrototype")
 pandas>=2.0
+scipy>=1.11              # statistics in harness/stats.py
+pyyaml>=6.0              # experiment configs
 matplotlib>=3.7
-wandb>=0.16          # optional: experiment logging (train.py runs without it)
-yfinance>=0.2        # optional: only needed by scrape_data.py
+pytest>=8                # tests/
+yfinance>=0.2            # only scripts/download_universe.py and scrape_data.py
+wandb>=0.16              # optional: live training curves in the legacy train.py

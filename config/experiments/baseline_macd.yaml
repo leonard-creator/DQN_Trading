@@ -1,0 +1,8 @@
+# Baseline "macd" (PROTOCOL §6). Merged on top of config/protocol.yaml.
+# Evaluated on the training tickers (primary), the leave-out tickers and the
+# single-asset reference, over all 5 folds x 10 seeds x the cost sweep.
+name: baseline_macd
+kind: baseline
+policy: macd
+policy_params: {}
+eval_sets: [train, leave_out, single]
