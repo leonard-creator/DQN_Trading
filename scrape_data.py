@@ -23,8 +23,7 @@ import numpy as np
 import pandas as pd
 
 # canonical output column order (matches the SundPGI layout the loader expects)
-OUT_COLUMNS = ["Date", "Open", "High", "Low", "Close", "Volume",
-               "ROC12", "MFI14", "FVolatility"]
+OUT_COLUMNS = ["Date", "Open", "High", "Low", "Close", "Volume", "ROC12", "MFI14", "FVolatility", "SMA20_Rel", "SMA50_Rel"]
 
 
 def compute_indicators(df, roc_n=12, mfi_n=14, vol_n=14):
@@ -56,6 +55,12 @@ def compute_indicators(df, roc_n=12, mfi_n=14, vol_n=14):
     # Realized volatility (rolling std of log returns)
     log_ret = np.log(close / close.shift(1))
     out["FVolatility"] = log_ret.rolling(vol_n).std()
+    
+    # We calculate Close / SMA. 
+    # > 1 means price is above average (bullish), < 1 means below (bearish).
+    out["SMA20_Rel"] = close / close.rolling(window=20).mean()
+    out["SMA50_Rel"] = close / close.rolling(window=50).mean()
+
     return out
 
 

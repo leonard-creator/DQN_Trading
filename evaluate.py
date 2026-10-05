@@ -17,6 +17,12 @@ from functions import load_features, FeatureScaler, formatPrice
 from env import TradingEnv
 from agent.agent import Agent
 
+# fixes on DGX 
+import tensorflow as tf
+os.environ['TF_XLA_FLAGS'] = ""
+# Disable the XLA JIT compiler entirely
+tf.config.optimizer.set_jit(False)
+
 
 def evaluate(agent, env, plotting=False, title="model", save_path=None, verbose=False):
     """Roll the greedy policy through `env` once and report performance.

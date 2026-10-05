@@ -14,6 +14,11 @@ from keras.layers import (Input, Conv1D, Dense, Concatenate,
 from keras.models import Model, load_model
 from keras.optimizers import Adam
 
+import os
+os.environ['TF_XLA_FLAGS'] = "" 
+import tensorflow as tf
+tf.config.optimizer.set_jit(False)
+
 
 class ReplayBuffer:
     """Pre-allocated ring buffer.
@@ -67,7 +72,8 @@ def build_model(arch, window, n_feat, n_pos, action_size, lr):
         # causal padding keeps the encoder from mixing in any future step
         x = Conv1D(32, 3, activation="relu", padding="causal")(market_in)
         x = Conv1D(64, 3, activation="relu", padding="causal")(x)
-        x = GlobalAveragePooling1D()(x)
+        #x = GlobalAveragePooling1D()(x)
+        x = Flatten()(x)
     elif arch == "lstm":
         x = LSTM(64)(market_in)
     else:  # "mlp" fallback: flatten the window, no temporal inductive bias
@@ -81,7 +87,7 @@ def build_model(arch, window, n_feat, n_pos, action_size, lr):
     q = Dense(action_size, activation="linear")(h)
 
     model = Model([market_in, pos_in], q)
-    model.compile(loss="mse", optimizer=Adam(learning_rate=lr))
+    model.compile(loss=tf.keras.losses.Huber(delta=1.0), optimizer=Adam(learning_rate=lr))
     return model
 
 
@@ -120,6 +126,40 @@ class Agent:
         clone.set_weights(model.get_weights())
         return clone
 
+    @tf.function
+    def _train_step(self, m, p, a, r, nm, npv, d):
+        # Double DQN Logic moved inside the graph
+        # Get next actions from online model
+        next_online = self.model([nm, npv], training=False)
+        next_actions = tf.cast(tf.argmax(next_online, axis=1), tf.int32)
+        
+        # Get values from target model
+        next_target = self.target_model([nm, npv], training=False)
+        
+        # Create a mask to pick the Q-value of the action chosen by online net
+        # this is the vectorized version of: next_target[np.arange(batch), next_actions]
+        batch_range = tf.range(tf.shape(r)[0])
+        indices = tf.stack([batch_range, next_actions], axis=1)
+        q_next = tf.gather_nd(next_target, indices)
+        # Compute targets: y = r + gamma * Q_target(s', argmax Q_online(s', a))
+        targets = r + self.gamma * q_next * (1.0 - d)
+        with tf.GradientTape() as tape:
+            # Get current Q values
+            q_values = self.model([m, p], training=True)
+            
+            # Mask q_values to only update the action taken
+            # We create a one-hot mask for the actions
+            action_mask = tf.one_hot(a, self.action_size)
+            
+            # The loss is the MSE between the current Q-value of the 
+            # action taken and the target value
+            current_q = tf.reduce_sum(q_values * action_mask, axis=1)
+            loss = tf.reduce_mean(tf.square(targets - current_q))
+        # Optimize
+        grads = tape.gradient(loss, self.model.trainable_variables)
+        self.model.optimizer.apply_gradients(zip(grads, self.model.trainable_variables))
+        return loss
+
     def sync_target(self):
         """Hard update: copy online weights into the target network."""
         if self.target_model is not None:
@@ -150,17 +190,17 @@ class Agent:
 
     # --- learning --------------------------------------------------------
     def learn(self, buffer, batch_size):
-        """One vectorized Double-DQN update over a sampled minibatch."""
+        """Optimized learning call."""
+        # Sample from buffer (CPU)
         m, p, a, r, nm, npv, d = buffer.sample(batch_size)
-
-        # Double DQN: online net picks the next action, target net values it.
-        next_online = np.asarray(self.model.predict_on_batch([nm, npv]))
-        next_actions = np.argmax(next_online, axis=1)
-        next_target = np.asarray(self.target_model.predict_on_batch([nm, npv]))
-        q_next = next_target[np.arange(batch_size), next_actions]
-
-        targets = r + self.gamma * q_next * (1.0 - d)   # 0 bootstrap on terminal
-
-        q = np.asarray(self.model.predict_on_batch([m, p]))
-        q[np.arange(batch_size), a] = targets            # only the taken action's target changes
-        self.model.train_on_batch([m, p], q)
+        # Convert to tensors once and push to GPU
+        # This is the only CPU -> GPU transfer per batch
+        m = tf.convert_to_tensor(m)
+        p = tf.convert_to_tensor(p)
+        a = tf.convert_to_tensor(a, dtype=tf.int32)
+        r = tf.convert_to_tensor(r, dtype=tf.float32)
+        nm = tf.convert_to_tensor(nm)
+        npv = tf.convert_to_tensor(npv)
+        d = tf.convert_to_tensor(d, dtype=tf.float32)
+        # Execute the compiled graph (Fast!)
+        self._train_step(m, p, a, r, nm, npv, d)

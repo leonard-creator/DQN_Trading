@@ -20,6 +20,9 @@ from env import TradingEnv
 from agent.agent import Agent, ReplayBuffer
 from evaluate import evaluate
 
+os.environ['TF_XLA_FLAGS'] = ""
+import tensorflow as tf
+tf.config.optimizer.set_jit(False)
 
 def set_seeds(seed):
     """Seed python/numpy/tensorflow for reproducible runs."""

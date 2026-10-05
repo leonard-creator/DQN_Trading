@@ -12,19 +12,23 @@ import numpy as np
 import pandas as pd
 
 # Feature columns fed to the network (selected by name, order preserved).
-DEFAULT_FEATURES = ["Close", "Volume", "ROC12", "MFI14", "FVolatility"]
+DEFAULT_FEATURES = ["Close", "Volume", "ROC12", "MFI14", "FVolatility", "SMA20_Rel", "SMA50_Rel"]
 
 # Per-feature transform applied before the network sees it:
 #   logreturn_z : log return of the level, then z-score (scale-free price signal)
 #   log_z       : log1p(x), then z-score (compresses heavy-tailed volume)
 #   z           : plain z-score using train-set mean/std
 #   div100      : divide by 100 (bounded 0-100 oscillators -> ~0-1, no stats)
+
+# adding moving average to better identify trends
 FEATURE_TRANSFORMS = {
     "Close": "logreturn_z",
     "Volume": "log_z",
     "ROC12": "z",
     "MFI14": "div100",
     "FVolatility": "z",
+    "SMA20_Rel": "z",
+    "SMA50_Rel": "z",
 }
 
 
