@@ -1,6 +1,6 @@
 # PROTOCOL — Risk-aware cross-asset DQN (pre-registration)
 
-> **Status: APPROVED v1.0 (2026-10-05). Frozen.** Approved before any training run under this protocol.
+> **Status: APPROVED v1.0 (2026-10-05), current v1.2 (clarifications, §10). Frozen.** Approved before any training run under this protocol.
 > Decisions taken: universe as listed (§2), frozen test period **2023-10-02 → 2026-09-30** (§4.1), position sizing **capital fraction, long-only, K = 4** (§5).
 > Any later change gets a dated entry in §10 and counts against the trial budget where relevant.
 >
@@ -150,7 +150,9 @@ The approved text left the points below open. They were fixed while building the
 6. **Permutation test.** Pairs are (seed, fold). The statistic is the mean difference in annualised net Sharpe; the test is one-sided (agent > baseline). Deterministic baselines take the same value for every seed of a fold.
 7. **H1 evaluation set.** Primary = the 26 training-universe tickers. The 7 leave-out tickers and ^GDAXI alone are reported as secondary results.
 
-**Open before M5 (needs owner decision):** the test period is a single block, so at M5 the (seed × fold) pairs reduce to 10 seed pairs. Those capture seed variation but no variation across market periods. Option: split the test period into three consecutive 12-month sub-blocks for the pairing (30 pairs) and also report the full-period result.
+8. **Test-period pairing (v1.2, approved by the owner 2026-10-05).** For the H1 statistics at M5, the test period is split into three consecutive 12-month sub-blocks: **T1 2023-10-02 → 2024-09-30, T2 2024-10-01 → 2025-09-30, T3 2025-10-01 → 2026-09-30**. That gives 10 seeds × 3 sub-blocks = 30 pairs. All three share **one training cut** at the test start (purged by P bars): the agent is trained once on development data and is never retrained on T1 before T2, so no test data enters training. Each sub-block starts flat, like a validation fold. The full-period result (the three sub-blocks' daily returns concatenated) is reported next to it.
+
+9. **Secondary cost scenarios (2026-10-05, owner request).** Named scenarios in `config/cost_scenarios.yaml` are reported **next to** the cost sweep of §7. The first is `neo_broker`: EUR 1 for every transaction (each buy and each sell) on EUR 10,000, 3 bp half-spread, and a TER on held exposure where the price series is a fee-free index. Agents may also be **trained** under a scenario; each such configuration is a trial. Scenarios never replace the primary 10 bp level, and **H1 is evaluated only at the primary level**.
 
 ## 10. Change log of this protocol
 
@@ -159,3 +161,5 @@ The approved text left the points below open. They were fixed while building the
 | 2026-10-05 | v0.1 | First draft (Step 0). |
 | 2026-10-05 | v1.0 | Approved by the project owner: universe as drafted, test period option A, position sizing capital fraction long-only K = 4. Frozen. |
 | 2026-10-05 | v1.1 | §10a: implementation clarifications fixed while building the harness (before any agent run). One open item for M5 listed there. |
+| 2026-10-05 | v1.2 | Owner approved the open item: test period split into three 12-month sub-blocks with one shared training cut (§10a.8). Still before any agent run. |
+| 2026-10-05 | v1.2 (addendum) | §10a.9: secondary cost scenarios (neo-broker). H1, its cost level and every existing config hash unchanged; scenarios live in their own file. |

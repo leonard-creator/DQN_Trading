@@ -20,6 +20,7 @@ without the code:
     hit_rate       share of invested days (exposure != 0) with net return > 0
     avg_holding    mean length in bars of a continuous invested run
                    (exposure != 0); pooled over tickers for a portfolio
+    trades_per_year  transactions (any change of exposure) per ticker per year
     skew, kurtosis sample skewness and (non-excess) kurtosis of r; normal = 0 and 3
 
 Metrics that are undefined (e.g. calmar with no drawdown, or anything on a
@@ -117,6 +118,10 @@ def portfolio_metrics(port, ticker_frames, bars_per_year=252):
         wins += int((f["net"].to_numpy()[on] > 0).sum())
     m["avg_holding"] = bars / runs if runs else np.nan
     m["hit_rate"] = wins / invested_days if invested_days else np.nan
+    # transactions per year per ticker (what a flat per-order fee is charged on)
+    if all("trades" in f for f in ticker_frames.values()):
+        years = max(len(port) / bars_per_year, 1e-9)
+        m["trades_per_year"] = float(np.mean([f["trades"].sum() for f in ticker_frames.values()]) / years)
     return m
 
 

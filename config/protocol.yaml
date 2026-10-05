@@ -1,13 +1,12 @@
-# Machine-readable copy of PROTOCOL.md v1.0 (approved 2026-10-05).
-# PROTOCOL v1.1 only added clarifications (§10a); no value here changed, so
-# protocol_version stays "1.0" and existing config hashes remain valid.
+# Machine-readable copy of PROTOCOL.md (v1.0 approved 2026-10-05; v1.2 adds
+# the test sub-blocks below, approved the same day before any agent run).
 #
 # Every number the evaluation harness uses comes from this file, so the
 # protocol and the code cannot drift apart. Do NOT edit values here without a
 # dated entry in PROTOCOL.md §10. Changing a value changes the config hash of
 # every experiment that loads it, so old and new trials stay distinguishable.
 
-protocol_version: "1.0"
+protocol_version: "1.2"
 
 # --- data (PROTOCOL §3) -----------------------------------------------------
 data:
@@ -38,6 +37,13 @@ universe:
 splits:
   test_start: "2023-10-02"      # frozen test period start; locked (see §9 / scripts/final_test.py)
   test_end: "2026-09-30"
+  # PROTOCOL §10a.8 (v1.2): pairing unit for the H1 statistics at M5. All three
+  # share ONE training cut at test_start (the agent is never retrained inside
+  # the test period).
+  test_blocks:
+    - {name: T1, val_start: "2023-10-02", val_end: "2024-09-30"}
+    - {name: T2, val_start: "2024-10-01", val_end: "2025-09-30"}
+    - {name: T3, val_start: "2025-10-01", val_end: "2026-09-30"}
   dev_start: "2007-07-02"
   dev_end: "2023-09-29"
   # Anchored (expanding) walk-forward: every fold trains from dev_start up to

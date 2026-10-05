@@ -53,12 +53,14 @@ def library_versions():
     import scipy
     out = {"python": platform.python_version(), "numpy": np.__version__,
            "pandas": pd.__version__, "scipy": scipy.__version__}
-    try:                                       # TF is optional for baseline-only runs
-        import sys
-        if "tensorflow" in sys.modules:
-            out["tensorflow"] = sys.modules["tensorflow"].__version__
-    except Exception:
-        pass
+    # TF/Keras run inside worker processes; read their versions from package
+    # metadata so the main process never has to import TensorFlow.
+    from importlib import metadata
+    for pkg in ("tensorflow", "keras"):
+        try:
+            out[pkg] = metadata.version(pkg)
+        except metadata.PackageNotFoundError:
+            pass
     return out
 
 

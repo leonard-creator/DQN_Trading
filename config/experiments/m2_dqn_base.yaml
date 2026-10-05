@@ -1,0 +1,74 @@
+# M2 base configuration: the spec Phase 2 model fixes, single asset ^GDAXI.
+# Merged on top of config/protocol.yaml. Ablations inherit this file and change
+# ONE thing each (m2_dqn_dueling / m2_dqn_nstep / m2_dqn_per); config/legacy.yaml
+# reproduces the old algorithmic choices for comparison.
+# Starting values follow docs/03_extracted_plan.md Phase F.
+
+name: m2_dqn_base
+kind: agent
+policy: dqn
+eval_sets: [single]
+
+agent:
+  train_tickers: single          # ticker set to train on (harness.data.ticker_sets)
+  # M2 keeps the existing 7 features so only the algorithm changes; M4 replaces them
+  features: [Close, Volume, ROC12, MFI14, FVolatility, SMA20_Rel, SMA50_Rel]
+  feature_clip: 10.0
+  window: 20                     # W (Phase F start value)
+
+  env:
+    reward: diff_sharpe          # diff_sharpe | pnl | profit (legacy); M3 adds mean_variance, vol_scaled_pnl
+    diff_sharpe_eta: 0.01
+    reward_clip: 5.0             # diff_sharpe spikes while its variance estimate warms up
+    episode: random_window       # random start inside the training range ...
+    horizon: 252                 # ... for one year of bars, then a new start
+    asset_sampling: uniform
+    action_masking: true         # Phase 2.4
+
+  network:
+    arch: conv
+    pooling: flatten             # Phase 2.1 (legacy: gap)
+    conv_filters: [32, 64]
+    kernel_size: 3
+    hidden: [64, 32]
+    dueling: false
+
+  algo:
+    gamma: 0.99
+    double: true                 # Phase 2.3
+    loss: huber                  # Phase 2.2 (legacy: mse)
+    huber_delta: 1.0
+    reward_norm: running_std     # Huber delta is only meaningful on unit-scale rewards (W9)
+    n_step: 1
+    lr: 1.0e-4
+    lr_schedule: cosine          # Phase 2.5
+    lr_min_frac: 0.1
+    grad_clip_norm: 10.0
+    target_update: soft          # Phase 2.5
+    tau: 0.005
+    hard_every: 500
+    batch_size: 256
+    buffer_size: 100000
+    per: {enabled: false, alpha: 0.6, beta_start: 0.4, beta_end: 1.0, eps: 1.0e-6}
+
+  train:
+    transitions: 200000          # environment steps per (seed, fold)
+    n_envs: 32                   # parallel episodes
+    update_ratio: 0.25           # gradient steps per transition -> 50k updates
+    learning_starts: 5000
+    eps_start: 1.0
+    eps_end: 0.02
+    eps_decay_frac: 0.5
+    eval_every_updates: 2500     # inner-validation checkpoints (20 per run)
+    select: best_inner_val       # checkpoint chosen on inner validation ONLY
+
+  runtime:                       # execution only, not part of the config hash
+    workers: 12
+    gpus: auto                   # GPUs with < 2 GB in use at start
+    threads_per_worker: 3        # 12 x 3 = 36 of 40 cores (90 % cap)
+    deterministic_ops: true
+
+logging:                         # execution only, not part of the config hash
+  wandb: true
+  wandb_project: dqn-trading-protocol
+  wandb_mode: online

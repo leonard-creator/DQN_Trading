@@ -10,6 +10,11 @@ data/raw or the real experiments/trials.csv.
 import os
 import sys
 
+# Tests run on CPU: deterministic, fast for tiny networks, and they never take
+# GPU memory on the shared server. Must be set before TensorFlow is imported.
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -63,3 +68,21 @@ def synthetic_cfg(tmp_path):
     cfg["universe"]["buckets"] = override["universe"]["buckets"]   # replace, not merge
     cfg["splits"]["folds"] = override["splits"]["folds"]
     return cfg
+
+
+@pytest.fixture
+def synthetic_agent_cfg(synthetic_cfg):
+    """The M2 base agent on the synthetic world, shrunk to run in seconds on CPU."""
+    base = load_config("config/experiments/m2_dqn_base.yaml")
+    cfg = deep_merge(synthetic_cfg, {k: base[k] for k in ("name", "kind", "policy", "agent")})
+    return deep_merge(cfg, {
+        "eval_sets": ["single"],
+        "agent": {"train_tickers": "train", "window": 10,
+                  "env": {"horizon": 60},
+                  "network": {"conv_filters": [8, 8], "hidden": [16]},
+                  "algo": {"batch_size": 32, "buffer_size": 5000},
+                  "train": {"transitions": 1600, "n_envs": 8, "learning_starts": 200,
+                            "eval_every_updates": 100},
+                  "runtime": {"workers": 1, "threads_per_worker": 1}},
+        "logging": {"wandb": False},
+    })

@@ -38,11 +38,23 @@ import pandas as pd
 
 @dataclass(frozen=True)
 class Fold:
-    """Cut dates of one walk-forward fold (shared by all tickers)."""
+    """Cut dates of one walk-forward fold (shared by all tickers).
+
+    `train_cut` is the date before which training data must end (then purged
+    by P bars). It defaults to `val_start`. Several evaluation blocks can share
+    one cut. The three test sub-blocks do (PROTOCOL §10a.8), so the agent
+    is trained once and never on data from an earlier sub-block.
+    """
     name: str
     train_start: pd.Timestamp   # first bar a training decision may use (dev_start)
     val_start: pd.Timestamp     # first RETURN date of the evaluation block
     val_end: pd.Timestamp       # last RETURN date of the evaluation block (inclusive)
+    train_cut: pd.Timestamp = None
+
+    @property
+    def cut(self):
+        """Training boundary actually used: train_cut if given, else val_start."""
+        return self.train_cut if self.train_cut is not None else self.val_start
 
 
 def folds_from_config(cfg):
@@ -54,7 +66,7 @@ def folds_from_config(cfg):
 
 
 def final_test_fold(cfg):
-    """The frozen test period as a fold (training = whole development period).
+    """The whole frozen test period as one fold (training = development period).
 
     Only usable together with the unlock token from harness.data.unlock_test_period(),
     because without it the price data simply ends before test_start.
@@ -62,6 +74,18 @@ def final_test_fold(cfg):
     s = cfg["splits"]
     return Fold("TEST", pd.Timestamp(s["dev_start"]),
                 pd.Timestamp(s["test_start"]), pd.Timestamp(s["test_end"]))
+
+
+def final_test_blocks(cfg):
+    """The three 12-month test sub-blocks T1-T3 (PROTOCOL §10a.8).
+
+    They share one training cut at test_start, so a policy that trains per
+    (seed, cut) trains once and evaluates all three blocks.
+    """
+    s = cfg["splits"]
+    start, cut = pd.Timestamp(s["dev_start"]), pd.Timestamp(s["test_start"])
+    return [Fold(b["name"], start, pd.Timestamp(b["val_start"]), pd.Timestamp(b["val_end"]), cut)
+            for b in s["test_blocks"]]
 
 
 def purge_bars(cfg, window=None, horizon=None):
@@ -89,9 +113,12 @@ class FoldRanges:
     """Per-ticker integer ranges for one fold. All ends are EXCLUSIVE.
 
     train      : [train_start_pos, train_end_pos)        all usable training bars
-    inner_train: [train_start_pos, inner_train_end_pos)  used to fit when an inner validation is used
+    inner_train: [train_start_pos, inner_train_end_pos)  the bars the network is fitted on
     inner_val  : [inner_val_start_pos, train_end_pos)    checkpoint selection only
     val        : return positions of the evaluation block (decision at pos-1)
+
+    train_end_pos is purged against the fold's training CUT (Fold.cut), which
+    equals the block start except for the test sub-blocks.
     """
     train_start_pos: int
     train_end_pos: int
@@ -120,7 +147,9 @@ def fold_ranges(index, fold, purge, inner_val_bars):
     val = block_positions(index, fold.val_start, fold.val_end)
     if len(val) == 0:
         raise ValueError(f"{fold.name}: no bars between {fold.val_start.date()} and {fold.val_end.date()}")
-    v = int(val[0])
+    if fold.cut > fold.val_start:
+        raise ValueError(f"{fold.name}: training cut {fold.cut.date()} is after the block start")
+    v = int(index.searchsorted(fold.cut, side="left"))   # first bar at/after the training cut
     train_start = int(index.searchsorted(fold.train_start, side="left"))
     train_end = v - purge                         # exclusive: bars [v-P, v-1] are purged
     if train_end <= train_start:

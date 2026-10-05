@@ -1,0 +1,6 @@
+# M2 ablation: base + dueling head (Wang et al. 2016). One change only.
+inherit: config/experiments/m2_dqn_base.yaml
+name: m2_dqn_dueling
+agent:
+  network:
+    dueling: true

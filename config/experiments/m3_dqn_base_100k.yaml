@@ -1,0 +1,12 @@
+# M3 reference: the M2 base agent on the REDUCED training budget (owner decision
+# 2026-10-05). M2 runs peaked at a median of ~30 % of 200k transitions, so 100k
+# keeps margin after the typical best checkpoint and halves compute.
+# Also the 10-bp reference for the neo-broker scenario (nb_dqn_base differs only
+# in its training costs). Reports the neo_broker scenario next to the bp sweep.
+inherit: config/experiments/m2_dqn_base.yaml
+name: m3_dqn_base_100k
+cost_scenarios: [neo_broker]
+agent:
+  train:
+    transitions: 100000
+    eval_every_updates: 1250     # keeps ~20 inner-validation checkpoints per run

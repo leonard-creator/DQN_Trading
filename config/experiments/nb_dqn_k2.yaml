@@ -1,0 +1,8 @@
+# Neo-broker variant: fewer, larger steps (K = 2: exposure 0 / 50 / 100 %).
+# A flat per-transaction fee favours bigger trades over many small ones.
+# Deviates from PROTOCOL decision 3 (K = 4) on purpose; secondary scenario only.
+inherit: config/experiments/nb_dqn_base.yaml
+name: nb_dqn_k2
+agent:
+  env:
+    levels: 2

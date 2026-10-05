@@ -49,48 +49,83 @@ def deep_merge(base, override):
     return out
 
 
+def _load_with_inherit(path, depth=0):
+    """Load an experiment YAML, first merging the file named in its `inherit:` key.
+
+    This keeps ablation configs to a few lines: e.g. m2_dqn_dueling.yaml says
+    `inherit: config/experiments/m2_dqn_base.yaml` and then changes one flag,
+    so it is obvious that exactly one thing differs.
+    """
+    if depth > 5:
+        raise RecursionError(f"inherit chain too deep at {path}")
+    if not os.path.isabs(path):
+        path = repo_path(path)
+    own = load_yaml(path)
+    parent = own.pop("inherit", None)
+    if parent is None:
+        return own
+    return deep_merge(_load_with_inherit(parent, depth + 1), own)
+
+
 def load_config(path=None, overrides=None):
     """Return protocol.yaml merged with an experiment YAML and optional overrides.
 
     path      : experiment YAML (relative paths resolve against the repo root),
-                or None to get the bare protocol.
+                or None to get the bare protocol. May use `inherit:`.
     overrides : dict merged last, e.g. {"evaluation": {"costs": {"primary_bps": 5}}}.
     """
     cfg = load_yaml(PROTOCOL_PATH)
     if path is not None:
-        if not os.path.isabs(path):
-            path = repo_path(path)
-        cfg = deep_merge(cfg, load_yaml(path))
+        cfg = deep_merge(cfg, _load_with_inherit(path))
     if overrides:
         cfg = deep_merge(cfg, overrides)
     return cfg
 
 
+# Keys that only control HOW a run executes (parallel workers, GPUs, live
+# logging), not WHAT it computes. They are left out of the config hash, so
+# running the same configuration with more workers is still the same trial.
+EXECUTION_KEYS = ("runtime", "logging")
+
+
 def config_hash(cfg, length=12):
-    """Stable short hash of a config (seeds excluded, see module docstring)."""
+    """Stable short hash of a config (seeds and execution keys excluded)."""
     clean = copy.deepcopy(cfg)
     clean.get("evaluation", {}).pop("seeds", None)
+    for k in EXECUTION_KEYS:
+        clean.pop(k, None)
+        clean.get("agent", {}).pop(k, None)
     # sort_keys + fixed separators -> identical dicts always give identical text
     text = json.dumps(clean, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(text.encode()).hexdigest()[:length]
 
 
+# Source files that can change what a run COMPUTES. Drivers and reports
+# (scripts/), tests and the original single-asset code are excluded: editing an
+# analysis script must not make an identical training run look like new code.
+# (Before 2026-10-05 17:20 the hash covered every .py file, including scripts/,
+# so M2's m2_dqn_base row differs from the other four rows only because
+# scripts/analyze_m2.py was edited in between.)
+CODE_PATHS = ("harness", "rl", "functions.py", "scrape_data.py")
+
+
 def code_hash(length=12):
-    """Hash of every tracked-looking Python source file in the repo.
+    """Hash of the source files in CODE_PATHS.
 
     Stored next to each trial so that 'same config, different code' can be
-    told apart even when the change is not committed yet. Tests and caches are
-    skipped because they do not change what a run computes.
+    told apart even when the change is not committed yet.
     """
     h = hashlib.sha256()
-    skip_dirs = {".git", "__pycache__", "wandb", "tests", "data", "experiments",
-                 "models", "graphs", "train_data", "test_data"}
-    for root, dirs, files in os.walk(REPO_ROOT):
-        dirs[:] = sorted(d for d in dirs if d not in skip_dirs and not d.startswith("."))
-        for name in sorted(files):
-            if name.endswith(".py"):
-                full = os.path.join(root, name)
-                h.update(os.path.relpath(full, REPO_ROOT).encode())
-                with open(full, "rb") as fh:
-                    h.update(fh.read())
+    files = []
+    for p in CODE_PATHS:
+        full = os.path.join(REPO_ROOT, p)
+        if os.path.isfile(full):
+            files.append(full)
+        for root, dirs, names in os.walk(full):
+            dirs[:] = sorted(d for d in dirs if d != "__pycache__")
+            files += [os.path.join(root, n) for n in names if n.endswith(".py")]
+    for full in sorted(set(files)):
+        h.update(os.path.relpath(full, REPO_ROOT).encode())
+        with open(full, "rb") as fh:
+            h.update(fh.read())
     return h.hexdigest()[:length]

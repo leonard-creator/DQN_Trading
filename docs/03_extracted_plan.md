@@ -179,5 +179,48 @@ A clean negative result is a valid scientific outcome. Don't loosen the protocol
 - Wiese et al., Quant. Finance 2020 (Quant GANs) — https://ideas.repec.org/a/taf/quantf/v20y2020i9p1419-1440.html
 - yfinance issue #2451 — https://github.com/ranaroussi/yfinance/issues/2451
 - Alpha Vantage support — https://www.alphavantage.co/support/#api-key
+- Guijarro-Ordonez, Pelger & Zanotti, Management Science 72(9) 2026 (Deep Learning Statistical Arbitrage) — https://doi.org/10.1287/mnsc.2022.03132 (added 2026-10-05, see §7)
 
 *Research code only; this is not investment advice.*
+
+---
+
+## 7. Addendum (2026-10-05): lessons from "Deep Learning Statistical Arbitrage" and a fallback if H1 fails
+
+**Source:** Guijarro-Ordonez, Pelger & Zanotti, *Management Science* 72(9), 2026 (https://doi.org/10.1287/mnsc.2022.03132). The full text read was arXiv v2 (2022). Details, caveats and what could not be verified are in `evidence-dqn-trading.md` (2026-10-05 entry).
+
+**Ground rule.** H1 and PROTOCOL v1.2 are **not** changed by this addendum. Changing a pre-registered hypothesis after seeing results is the failure mode the protocol exists to prevent. The paper is used in two legitimate ways: (A) to choose development configurations *before* their results are seen, within the 50-trial budget; and (B) to pre-register an *additional* hypothesis H2, only with the owner's approval and only **before M5**.
+
+### 7.1 What the paper implies for this project
+
+| Paper finding | Implication here | Tag |
+|---|---|---|
+| Return **levels** are "extremely hard to predict"; trading raw returns gave Sharpe 1.64 vs 2.5–4.2 for factor **residuals** | H1 asks the agent to time the level of broad ETFs. M1 already shows no timing rule beats buy-and-hold at 10 bp. Expect H1 to be hard. | [L] |
+| Signal extraction dominates; the allocation function adds little | The temporal encoder deserves more attention than RL extras (dueling / PER / n-step). The DQN's main job is cost-aware position control | [L] |
+| Conv + transformer doubles performance vs a fixed Fourier filter; generic nets do worse | Worth one encoder ablation in M4 | [L] |
+| End-to-end Sharpe objective, ‖w‖₁ = 1, long-short | Supports `diff_sharpe` as the reward; a long-short, market-neutral design needs `allow_short` and a borrow-cost model | [L] |
+| Half of the Sharpe survives a 1-week hold; lookback 30 days | Our window W = 20 and daily decisions are in the right range | [L] |
+| Costs tested only up to 5 bp (Sharpe 4.16 → 3.79); large-cap single stocks; sample ends 2016; no seed analysis | Their edge at our 10 bp + spread is unknown, and with 26 ETFs there are far fewer independent residual bets. Do not expect Sharpe ratios of that size | [R] |
+
+### 7.2 Track A: inside the current protocol (agent improvements, decided before results)
+
+These keep H1 unchanged. Each costs one trial and is fixed in a config **before** its validation results are seen:
+
+- **A1, M4 features: residual signals.** For each ticker, the daily return minus its exposure to the first k principal components of the universe. Estimated on trailing windows only (PCA on 252 days, loadings on 60), cumulated over L = 30 days, added as extra input channels. The directional agent can then see whether an ETF is cheap or rich **relative** to the rest. A look-ahead unit test is required, as for every feature.
+- **A2, M4 encoder ablation:** `network.arch: conv_transformer` (2 conv layers with 8 filters of size 2, then 4-head attention, as in the paper) vs the current conv-Flatten encoder.
+- **A3, diagnostic (no extra trial):** report how much of the agent's net Sharpe comes from *exposure timing* vs *being long*, by comparing with the random agent at matched exposure. This tests the paper's "allocation adds little" point on our data.
+
+### 7.3 Track B: contingency hypothesis H2, if H1 is likely to fail
+
+Trigger: after M3 or M4, if the development results show no configuration with a median validation Sharpe above buy-and-hold net of costs (the M3 kill criterion in §5).
+
+- **H2 (draft, not approved):** a **market-neutral residual strategy** on the training-universe ETFs has a positive net Sharpe with deflated Sharpe > 0.95. It must also beat two baselines that stay on the same residuals: (i) an Ornstein-Uhlenbeck threshold rule (the paper's parametric benchmark) and (ii) a 1-week residual reversal rule. Costs: the same 10 bp + 1 bp half-spread, plus a borrow fee on short positions (value to be fixed at pre-registration).
+- **Design:**
+  - long-short weights with ‖w‖₁ = 1 across tickers (a portfolio, not per-ticker sleeves);
+  - residuals as in A1;
+  - policy = the DQN with `allow_short` and residual inputs, compared with the paper's end-to-end Sharpe-maximising network as a non-RL alternative.
+- **Test period:** the frozen test can be opened **once**. H2 must therefore be pre-registered (PROTOCOL v1.3) **before M5** and evaluated in the **same** `final_test.py` run as H1, with Holm correction across {H1, H2}. The alternative is a forward test on data after 2026-09-30, which needs months of new data.
+- **Budget:** H2 development configurations count in the same trial log, so they raise N_trials for H1's deflated Sharpe as well. Keep H2 to a few configurations.
+- **Known risk:** 26 broad ETFs carry little idiosyncratic risk, so residual mean-reversion may be too weak to survive 10 bp. A larger, survivorship-free universe of liquid ETFs would help, but needs a PROTOCOL change and new data.
+
+**Decision needed from the owner (no later than before M5):** pre-register H2 or not. Until then Track B is a plan only; no H2 code or trials will be run.

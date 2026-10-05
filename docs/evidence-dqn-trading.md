@@ -66,3 +66,53 @@
 - How much does augmentation (bootstrap or GAN) help a DQN on top of cross-asset pooling?
 
 **Not found / could not verify:** a DOI for Moody & Saffell 2001 (only a metadata page); full texts. The Quant GANs abstract fetch timed out. The exact Alpha Vantage rules for free *historical* intraday data are ambiguous on the support page.
+
+---
+
+## 2026-10-05 — Guijarro-Ordonez, Pelger & Zanotti, "Deep Learning Statistical Arbitrage" (requested by the project owner)
+
+**Channel:** web fetch (Crossref API for the published record; arXiv + ar5iv for the open full text). The INFORMS page returned HTTP 403 (paywall/bot block); the Berkeley CDAR PDF copy was unreachable (DNS).
+**Queries:** DOI 10.1287/mnsc.2022.03132; "Deep Learning Statistical Arbitrage" Guijarro-Ordonez Pelger Zanotti.
+**Read level:** Tier 3 (full text, targeted at methods / results / costs) of **arXiv v2 (2022-10-07)**. The published version's full text was NOT read. Its abstract (from Crossref) words the results more cautiously ("considerable ... outperform" vs the preprint's "consistently high ... substantially outperform"), so the published numbers may differ from those below.
+
+| Paper | Year | Type | Finding (one line) | Link |
+|---|---|---|---|---|
+| Guijarro-Ordonez, Pelger & Zanotti, *Management Science* 72(9):7502–7549 | 2026 (issue Sept 2026; Crossref gives no online-first date) | primary | Trade **factor residuals**, not price levels: residual portfolios from conditional latent factors (IPCA), signals from a **convolutional transformer** over 30-day cumulative residuals, allocation by a network trained **end-to-end to maximise Sharpe**. Daily U.S. large caps, out of sample 2002–2016: Sharpe 4.16 (IPCA-5) vs 0.97 for an Ornstein-Uhlenbeck threshold model and 1.90 for a Fourier filter [arXiv v2 numbers] | https://doi.org/10.1287/mnsc.2022.03132 · preprint https://arxiv.org/abs/2106.04028 |
+
+**Details extracted (arXiv v2; unverified against the published version)**
+
+- **Data:** ~550 largest, most liquid U.S. stocks (market cap > 0.01 % of total), CRSP daily returns, 46 firm characteristics. Trading evaluated Jan 2002 – Dec 2016.
+- **Arbitrage portfolios:** out-of-sample residuals from Fama-French (1–8 factors, 60-day loadings), PCA (1–15 factors, 252-day correlation, 60-day loadings) or IPCA (1–15 conditional factors, re-estimated yearly). Residuals are cumulated into a price-like path over a **lookback L = 30 days** (robust to L = 60).
+- **Signal extractor:** 2 causal-style conv layers (8 filters, size 2, instance norm, residual connections), then a transformer (4 heads); the last time step's projection is the signal.
+- **Policy:** a feed-forward net maps signals to weights. Weights are normalised to **‖w‖₁ = 1** (long-short, bounded leverage). Signal and allocation are trained **jointly** on the Sharpe ratio (mean-variance is an alternative). This is supervised end-to-end optimisation, **not** reinforcement learning.
+- **Training:** rolling 1,000-day estimation window, network re-estimated every 125 days, hyperparameters from validation periods. **No multiple random seeds or ensembles are reported** (our reading).
+- **Key results:**
+  - Residuals matter. Trading raw returns (K = 0) gives Sharpe 1.64, "substantially worse than any type of residual".
+  - The choice of factor model has only a minor effect (Sharpe 2.5–4.2 across models and factor counts).
+- **Ablation:** "trading signal extraction is the most challenging and separating element". The conv-transformer doubles performance vs a fixed Fourier filter, while a flexible allocation function adds only minor gains over a simple parametric rule. Generic, non-temporal neural nets do substantially worse.
+- **Costs:** Sharpe 4.16 → 4.01 at 2 bp → 3.79 at 5 bp. Results at our primary 10 bp level were not found. Turnover levels were not found in the parts read.
+- **Horizon:** most mispricing is corrected within ~1 month; about half of the Sharpe survives a 1-week holding period.
+- **Factor exposure:** alpha vs the Fama-French 8-factor model 8.3 %/yr (t ≈ 16), R² ≈ 4 %, i.e. close to market-neutral.
+
+**Relevance to this project**
+
+1. **Confirms:** a temporal encoder over a short daily window, a risk-adjusted objective trained directly on returns (same idea as `diff_sharpe` / Moody & Saffell), bounded leverage, and evaluation net of costs.
+2. **Challenges H1's design:** the paper's edge comes from predicting **relative** moves (residuals across a large cross-section), and it states that the level of returns is "extremely hard to predict". H1 asks a long-only agent to time the **level** of 26 broad ETFs against buy-and-hold. That is the hard problem the paper avoids. M1 agrees: no timing baseline beats buy-and-hold at 10 bp.
+3. **Not directly transferable:**
+   - 550 single stocks give many idiosyncratic bets; 26 broad ETFs (sector / country / asset-class baskets) give few, and their residuals are not idiosyncratic risk.
+   - CRSP data are paid.
+   - Costs were tested only up to 5 bp.
+   - The sample ends in 2016.
+   - There is no seed-variance or multiple-testing analysis comparable to PROTOCOL §8.
+
+**Conclusion:** strong evidence (one paper, peer-reviewed, preprint numbers) that relative-value / residual signals plus a learned temporal filter beat level-timing. It supports keeping a time-series encoder, and it gives a concrete fallback design if H1 fails (see `docs/03_extracted_plan.md` §7).
+
+**Open questions:**
+- Do ETF residuals (vs universe PCA or SPY) mean-revert enough to survive 10 bp + spread?
+- Does Q-learning add anything over the paper's end-to-end Sharpe policy, given its finding that the allocation step adds little?
+
+**Not found / could not verify:**
+- the published version's full text and final numbers;
+- turnover levels;
+- results at ≥ 10 bp;
+- the online-first publication date (the owner described it as published last year; Crossref lists only the September 2026 issue).

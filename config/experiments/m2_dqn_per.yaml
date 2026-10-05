@@ -1,0 +1,7 @@
+# M2 ablation: base + proportional prioritised replay (Schaul et al. 2016),
+# alpha 0.6, beta annealed 0.4 -> 1.0, importance weights in the Huber loss.
+inherit: config/experiments/m2_dqn_base.yaml
+name: m2_dqn_per
+agent:
+  algo:
+    per: {enabled: true}

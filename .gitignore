@@ -1,0 +1,22 @@
+# --- Python caches -----------------------------------------------------------
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# --- Frozen raw input data ----------------------------------------------------
+# Re-creatable with `python scripts/download_universe.py`. The provenance file
+# (row counts + sha256 of every CSV) IS committed, so a later download can be
+# checked against the data the results were computed on.
+data/raw/*
+!data/raw/MANIFEST.json
+
+# --- Per-run experiment outputs ------------------------------------------------
+# Large (daily returns, curves, model weights). Committed instead:
+#   experiments/trials.csv        the append-only trial log (needed for the
+#                                 deflated Sharpe ratio and PBO)
+#   experiments/reports/          generated milestone reports
+#   experiments/FINAL_TEST.lock   proof of the one-time test evaluation
+experiments/runs/
+
+# --- Local wandb run folders (the runs themselves are synced online) -----------
+wandb/

@@ -1,0 +1,40 @@
+# Named cost scenarios: SECONDARY results next to the PROTOCOL cost sweep.
+# They never replace the H1 cost level (10 bp + 1 bp half-spread, PROTOCOL §7).
+# Kept out of config/protocol.yaml on purpose: adding a scenario does not change
+# the config hash of any existing experiment. A config only depends on a
+# scenario if it names one (agent.env.cost_scenario).
+#
+# Cost formula (harness/backtest.py), per ticker sleeve of capital C / N:
+#   cost = (c + half_spread)/1e4 * |change in exposure|
+#        + fee_eur / (C / N)      for EVERY transaction (each buy AND each sell;
+#                                 a round trip pays the fee twice)
+#        + TER/1e4/252 * |held exposure|  per bar
+#
+# All values are ROUGH ESTIMATES, not verified quotes:
+#   * fee: EUR 1 per transaction, as charged by German neo-brokers for regular
+#     orders (owner's input, 2026-10-05).
+#   * spread: neo-brokers route to a single venue; liquid ETF quotes are
+#     typically a few bp wide, so 3 bp half-spread (sensitivity 1 / 5 bp).
+#   * TER: fund prices are already NET of their TER (the fee is taken from fund
+#     assets daily), so it is charged only where the price series is an INDEX
+#     without fees. In this universe that is ^GDAXI (proxy: a DAX UCITS ETF,
+#     broad-index TERs are roughly 0.07-0.20 % p.a.; 15 bp assumed). For the ETF
+#     series the TER is already inside the price. Typical UCITS TER ranges, for
+#     reference only: broad equity 0.07-0.20 %, sectors 0.15-0.35 %, EM /
+#     single-country 0.20-0.65 %, bonds 0.07-0.25 %, commodities 0.15-0.40 %.
+#   * not modelled: taxes (Abgeltungsteuer, Vorabpauschale), FX costs, and the
+#     fact that EU retail investors buy UCITS equivalents of the US-listed ETFs
+#     whose prices are used here as proxies.
+
+scenarios:
+  neo_broker:
+    fee_eur: 1.0
+    capital_eur: 10000
+    c_bps: 0                    # no percentage commission
+    half_spread_bps: 3
+    ter_bps: {"^GDAXI": 15}
+  # sensitivity variants (only the named key differs)
+  neo_broker_1k:      {base: neo_broker, capital_eur: 1000}
+  neo_broker_50k:     {base: neo_broker, capital_eur: 50000}
+  neo_broker_spread1: {base: neo_broker, half_spread_bps: 1}
+  neo_broker_spread5: {base: neo_broker, half_spread_bps: 5}

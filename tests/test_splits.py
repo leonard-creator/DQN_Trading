@@ -6,7 +6,7 @@ import pytest
 
 from harness.config import load_config
 from harness.splits import (Fold, block_positions, embargo_mask, fold_ranges,
-                            folds_from_config, purge_bars, final_test_fold)
+                            folds_from_config, purge_bars, final_test_fold, final_test_blocks)
 
 INDEX = pd.bdate_range("2005-01-03", "2012-12-31")
 
@@ -60,6 +60,23 @@ def test_protocol_folds_are_ordered_disjoint_and_before_the_test_period():
     assert pd.Timestamp(cfg["splits"]["dev_end"]) == folds[-1].val_end
     assert final_test_fold(cfg).val_start == test_start
     assert purge_bars(cfg) == 25
+
+
+def test_test_sub_blocks_cover_the_test_period_and_share_one_training_cut():
+    cfg = load_config()
+    blocks = final_test_blocks(cfg)
+    s = cfg["splits"]
+    assert [b.name for b in blocks] == ["T1", "T2", "T3"]
+    assert blocks[0].val_start == pd.Timestamp(s["test_start"])
+    assert blocks[-1].val_end == pd.Timestamp(s["test_end"])
+    for a, b in zip(blocks, blocks[1:]):
+        assert a.val_end < b.val_start and (b.val_start - a.val_end).days <= 4   # contiguous
+    assert {b.cut for b in blocks} == {pd.Timestamp(s["test_start"])}
+    # same cut -> identical purged training range for every sub-block
+    idx = pd.bdate_range("2006-01-02", "2026-09-30")
+    ranges = [fold_ranges(idx, b, purge=25, inner_val_bars=252) for b in blocks]
+    assert len({(r.train_start_pos, r.train_end_pos) for r in ranges}) == 1
+    assert ranges[0].train_end_pos == int(idx.searchsorted(pd.Timestamp(s["test_start"]))) - 25
 
 
 def test_fold_too_short_for_purge_raises():

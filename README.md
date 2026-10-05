@@ -8,7 +8,7 @@ The research question: *does the agent beat simple baselines net of costs, over 
 
 ## Project status (2026-10-05)
 
-**M1 (evaluation harness + baselines) is done.** [`PROTOCOL.md`](PROTOCOL.md) v1.1 is approved and frozen. Next: M2, model fixes on the single asset ^GDAXI.
+**M1 (harness + baselines) and M2 (model fixes on ^GDAXI) are done.** [`PROTOCOL.md`](PROTOCOL.md) v1.2 is approved and frozen. M2 result: training is stable, but no agent beats buy-and-hold net of costs, and the old (legacy) choices beat the Phase-2 fixes (see [`RESULTS.md`](RESULTS.md)). A secondary **neo-broker cost scenario** (EUR 1 per transaction) is implemented and evaluated: cheaper trades help a single ETF on EUR 10k slightly, but the agent gains no timing skill from them. Next: M3, reward variants, on the halved training budget (100k transitions).
 
 | Document | What it is |
 |---|---|
@@ -38,7 +38,7 @@ Every strategy, baseline or agent, is measured by the same code on the same date
 ```bash
 conda activate dqn_ml
 python scripts/download_universe.py        # once: 33 ETFs/indices + ^VIX into data/raw (skips existing files)
-python -m pytest                           # 46 tests: purge, look-ahead, cost timing, statistics, guard
+python -m pytest                           # 63 tests: purge, look-ahead, costs, statistics, guard, masking, DDQN, PER
 python scripts/run_baselines.py            # M1: baselines over 5 folds x 10 seeds x cost sweep
 ```
 
@@ -52,9 +52,34 @@ res.summary["train@10bp"]["sharpe_median"]
 
 **Adding an asset.** Add the ticker to a bucket in `config/protocol.yaml` **and** log the change in `PROTOCOL.md` §10, because it changes the universe and therefore every config hash. Then run `python scripts/download_universe.py`; only the new ticker is downloaded.
 
-**Why the test period is locked.** Every look at 2023-10 → 2026-09 that influences a design decision turns it into development data, and the final result would then be optimistic in a way no statistic can correct (PROTOCOL §9; Arnott, Harvey & Markowitz 2018). So `harness.data.load_prices()` cuts every series before 2023-10-02. The only way past that is `scripts/final_test.py --i-am-sure`, which first writes `experiments/FINAL_TEST.lock` and refuses to run a second time.
+**Why the test period is locked.** Every look at 2023-10 → 2026-09 that influences a design decision turns it into development data, and the final result would then be optimistic in a way no statistic can correct (PROTOCOL §9; Arnott, Harvey & Markowitz 2018). So `harness.data.load_prices()` cuts every series before 2023-10-02. The only way past that is `scripts/final_test.py --i-am-sure`, which first writes `experiments/FINAL_TEST.lock` and refuses to run a second time. The test period is evaluated as three 12-month sub-blocks that share one training cut (PROTOCOL §10a.8).
 
-## Original code (single asset, kept unchanged for now)
+## Agent (`rl/`)
+
+The DQN agent is a harness policy: `run_experiment` trains it once per (seed, fold) on the purged training range, selects the checkpoint on the inner-validation slice, and measures its greedy exposures exactly like a baseline.
+
+| Module | Role |
+|---|---|
+| `rl/features.py` | Per-ticker feature matrix (reuses `scrape_data.compute_indicators` + `functions.FeatureScaler`), scaler fitted on training bars only |
+| `rl/env.py` | Vectorised env: exposure k/K of capital (K = 4, long-only), action masking, rewards `diff_sharpe` / `pnl` / `profit` (legacy), random-start episodes |
+| `rl/replay.py` | Uniform and prioritised replay (sum tree) storing bar indices, n-step collector |
+| `rl/networks.py` | Two-input Q-network, late fusion, `flatten`/`gap` pooling, optional dueling head |
+| `rl/agent.py` | Double DQN with masked targets, Huber/MSE, LR schedule, soft/hard target updates |
+| `rl/trainer.py` | One training run: collect, learn, inner-validation checkpoint selection, training curve |
+| `rl/policy.py` | `DQNPolicy`: parallel (seed, fold) jobs, one GPU per worker, ≤ 90 % of CPU cores |
+
+```bash
+python scripts/run_agent.py --config config/experiments/m2_dqn_base.yaml --smoke   # 1 job, timing only, not logged
+python scripts/run_agent.py --config config/experiments/m2_dqn_base.yaml           # 10 seeds x 5 folds, logged trial
+python scripts/run_agent.py --config config/legacy.yaml                            # old algorithmic choices
+python scripts/analyze_m2.py                                                       # M2 report
+```
+
+**Switching the reward.** Set `agent.env.reward` in a config (`diff_sharpe`, `pnl`, or `profit` for the legacy reward). M3 adds `mean_variance` and `vol_scaled_pnl`. Make a new YAML that `inherit:`s the base and changes only that key, so the trial log shows exactly one difference.
+
+**Every agent run is a trial.** A new configuration (or a code change) adds one to `N_trials` in the deflated Sharpe ratio, and the budget is 50 (PROTOCOL §5). Use `--smoke` for mechanics checks: it logs nothing and deliberately prints no outer-validation numbers.
+
+## Original code (single asset, kept unchanged)
 
 | File | Role |
 |---|---|
@@ -106,6 +131,128 @@ These plots come from the original agent. They were made with one seed, no basel
 ## Change report
 
 Newest entry first. Each entry says what changed, why, and what was verified.
+
+### 2026-10-05 — Neo-broker cost scenario, M3 reference run, session hygiene
+
+**Requested by the owner:** a real-world scenario with EUR 1 for every transaction (each buy and each sell) plus ETF running costs (TER), including training under it. The M3 training budget is halved to 100k transitions.
+
+**Added**
+- `config/cost_scenarios.yaml`:
+  - named scenario `neo_broker`: EUR 1 per transaction on EUR 10,000, 3 bp half-spread, TER 15 bp/yr on held ^GDAXI exposure;
+  - sensitivity variants at EUR 1k / 50k capital and 1 / 5 bp half-spread.
+  - The file documents all estimates. It explains why TER is charged only on the index series: ETF prices are already net of their TER, so charging it there would double-count.
+- `harness/backtest.py`: `CostModel` (proportional + fixed fee per transaction + holding cost per bar), `load_scenarios()`, `scenario_cost()`.
+  - The fee is a fraction of the capital behind each position (capital / number of tickers).
+  - A plain float still means the PROTOCOL bp level, so M1/M2 numbers are unchanged.
+- `harness/experiment.py`:
+  - `run_experiment(..., cost_scenarios=...)` reports scenarios next to the bp sweep (`cost` column, `returns_<set>_scen-<name>.csv`);
+  - the code hash is taken at run start.
+- `rl/env.py`, `rl/trainer.py`, `rl/policy.py`:
+  - per-ticker cost models in the training reward and the checkpoint score (`agent.env.cost_scenario`);
+  - optional `agent.env.levels` (K);
+  - `StoredExposurePolicy` re-scores a finished trial without retraining (not a new trial).
+- `harness/metrics.py`: `trades_per_year`.
+- `scripts/rescore_costs.py` → `experiments/reports/cost_scenarios.md`: all trials and baselines under all scenarios, plus permutation tests and deflated Sharpe under `neo_broker`.
+- Configs `m3_dqn_base_100k` (10 bp reference, 100k transitions), `nb_dqn_base` (trained under neo-broker costs) and `nb_dqn_k2` (the same with K = 2). Trials 6–8 of 50.
+- `tests/test_costs.py` (8 tests):
+  - one fee for every buy and every sell, two per round trip, none on hold;
+  - per-sleeve scaling;
+  - TER only while invested;
+  - env = harness with fee and TER;
+  - scenario reporting and round-trip loading;
+  - end-to-end scenario training.
+  - Total: **71 tests pass**.
+- `PROTOCOL.md` §10a.9: scenarios are secondary; H1 stays at 10 bp + 1 bp.
+
+**Changed**
+- `harness/config.py`: `code_hash` covers only code that can change results (`harness/`, `rl/`, `functions.py`, `scrape_data.py`), not analysis scripts.
+- The two neo-broker trainings ran from a detached launcher (`experiments/runs/nb_launcher.sh`, `setsid nohup`), so they survive a VS Code disconnect.
+- A duplicate Claude session (tilingl-14) that had been editing the repo in parallel was stopped at the owner's request. Its M2 write-up in `RESULTS.md` was correct and is kept.
+
+**Results** (`RESULTS.md`, last two sections). Median Sharpe on ^GDAXI:
+- Halving training: 0.09 → **0.17** at 10 bp. Shorter training helps, consistent with overfitting.
+- Neo-broker, EUR 10k:
+  - re-scored 10 bp agents gain ≈ +0.1 (reference 0.26);
+  - **training under the scenario gives no improvement** (0.13; K = 2: 0.17), with trading activity unchanged at ≈ 110–120 transactions/yr.
+  - Buy-and-hold stays at 0.38; no agent's median beats it.
+- At EUR 1k the fee makes every active agent strongly negative. For a 26-ETF portfolio on EUR 10k it ruins every active baseline.
+- Legacy beats buy-and-hold on the mean difference under this scenario (Holm p = 0.033), but its median is lower and its deflated Sharpe is 0.72. Not robust; documented, not used as evidence.
+
+### 2026-10-05 — Knowledge base: "Deep Learning Statistical Arbitrage" + strategy addendum
+
+**Requested by the owner.** Guijarro-Ordonez, Pelger & Zanotti, *Management Science* 72(9):7502–7549 (Sept 2026 issue), https://doi.org/10.1287/mnsc.2022.03132.
+- `docs/evidence-dqn-trading.md`: new dated entry.
+  - Metadata comes from Crossref. Methods, results and cost numbers come from the open arXiv v2 (2022), because the published full text was not accessible (INFORMS 403). Everything not verified is listed.
+  - Main lesson: the paper's edge comes from trading **factor residuals** (relative value) with a **convolutional-transformer** time-series encoder. Trading raw return levels did much worse (Sharpe 1.64 vs ≈ 4). Signal extraction mattered far more than the allocation function.
+- `docs/03_extracted_plan.md` §7 (addendum): **H1 and the PROTOCOL are unchanged.**
+  - Track A, inside the protocol and decided before any results: residual features (A1) and a conv-transformer encoder ablation (A2) for M4, plus an exposure-timing diagnostic (A3).
+  - Track B, a contingency: a market-neutral residual hypothesis **H2**. It must be pre-registered **before M5** and tested in the same single test-period run, with Holm correction across H1 and H2. **Needs the owner's decision.**
+- The original `../project_mds/evidence-dqn-trading.md` was **not** edited (outside this folder); only the copy in `docs/` was updated.
+- `scripts/analyze_m2.py`: added a noise-robust collapse measure ("late drift"). The best-checkpoint comparison overstates collapse, because the maximum of ~20 one-year Sharpe estimates is biased upward.
+
+### 2026-10-05 — Phase 2 / M2: agent rebuilt on the harness (single asset ^GDAXI)
+
+**Decisions by the project owner:** test period split into three 12-month sub-blocks (PROTOCOL v1.2); `.gitignore` for raw data, run outputs and caches; wandb logging stays online.
+
+**Added: `rl/` package** (the original `env.py`, `agent/`, `train.py` are unchanged)
+- `rl/env.py`: vectorised environment. B = 32 episodes step together, so one network call serves 32 decisions; the old code made one `predict_on_batch` call per step.
+  - Positions are capital fractions k/K, K = 4, long-only (PROTOCOL decision 3).
+  - The per-step net return uses **exactly the harness backtest formula** (tested).
+  - Invalid actions are masked: no buy at max long, no sell when flat.
+  - The state is one-hot position + volatility-normalised unrealised P&L + holding time (spec Phase 3).
+  - Episodes are one year (252 bars) with a random start inside the training range. The old code walked the same path every episode, which invites memorisation.
+- `rl/replay.py`: the replay buffer stores bar indices, not window copies (~280× smaller per transition, multi-asset ready). Also proportional PER on a sum tree and an n-step collector.
+- `rl/agent.py`, `rl/networks.py`:
+  - Double DQN with masking at ε-greedy **and** inside the target argmax/max.
+  - Huber loss on running-std-normalised rewards. This also fixes the old issue where Huber was compiled but MSE was used.
+  - Cosine LR decay, global-norm gradient clipping, soft target updates (τ = 0.005) or hard copies.
+  - Flatten or GAP pooling, optional dueling head.
+- `rl/trainer.py`: checkpoint selection on the **inner-validation slice only** (the last 252 bars of each fold's training range, purged), scored with the harness backtest at 10 bp. A training curve is logged per run.
+- `rl/policy.py`: the harness policy. It trains all (seed, fold) jobs in parallel worker processes:
+  - one GPU per worker, with memory growth on;
+  - ≤ 90 % of CPU cores;
+  - TF op determinism on;
+  - one wandb run per job, grouped by configuration.
+- `config/experiments/m2_dqn_base.yaml` + three one-change ablations (`_dueling`, `_nstep`, `_per`), and `config/legacy.yaml`: MSE, GAP, profit reward, no masking, full-series episodes, hard target, constant LR 1e-3. All five were fixed **before** any agent result was seen; they use 5 of the 50-trial budget.
+- `scripts/run_agent.py` (with `--smoke`: timing only, nothing logged, no outer-validation output), `scripts/analyze_m2.py`.
+- `harness`:
+  - configs can `inherit:` another config;
+  - execution-only keys (`runtime`, `logging`) are excluded from the config hash;
+  - `run_experiment` calls an optional `policy.prepare()` and creates the run folder up front;
+  - `load_result()` rebuilds a stored run;
+  - `Fold.train_cut` and `final_test_blocks()` implement the test sub-blocks.
+- `tests/test_rl.py` (16 tests): masking at acting and in the target, Double-DQN target vs a manual computation (with an invalid unmasked argmax), soft update, PER sampling proportions and weights, sum tree, n-step sums and flush discounts, env return = harness backtest, feature look-ahead, no NaN features on real data, end-to-end determinism. Total: **63 tests pass**. Tests run on CPU.
+
+**Verified before the sweep:** a GPU smoke run took 31 s for 20k transitions, so ~5 min per full (seed, fold) job and ~25 min per configuration with 12 workers on 4 GPUs.
+
+**Sweep (14:05–17:14):** 5 configurations × 50 runs. In practice ~37 min per configuration, because three jobs share each GPU. All runs finished, 0 failures, and the 90 % CPU cap was respected (load ≤ 13 of 40 cores).
+
+**Results** (`RESULTS.md` M2, `experiments/reports/M2_agent.md`). Median Sharpe on ^GDAXI at 10 bp:
+
+| Config | Median Sharpe |
+|---|---|
+| legacy | 0.33 |
+| base | 0.09 |
+| dueling | 0.05 |
+| n-step | 0.05 |
+| PER | 0.05 |
+| *buy-and-hold* | *0.39* |
+
+- **No collapse:** Q-values stay bounded. The inner-validation Sharpe drifts down mildly (−0.1 to −0.3) after ~30 % of training, both with the legacy hard target and with the soft target + LR decay. That points to overfitting, not instability.
+- **Why the fixes underperform:** the new agents trade ~30× per year (legacy 7×) with no timing skill. Even at 0 bp they stay below buy-and-hold.
+- **Statistics:** no configuration beats buy-and-hold (legacy +0.06, Holm p = 0.10). All deflated Sharpe ratios are below 0.95. PBO over the 5 configurations is 0.02.
+
+**Fixed while analysing:** the first collapse measure (best checkpoint vs last) flagged 35/50 runs. Most of that is the upward bias of the maximum of ~20 noisy one-year Sharpe estimates, so a noise-robust "late drift" measure was added and is reported instead.
+
+**Changes made in the owner's parallel session (tilingl-91), 16:49–16:57, documented here for completeness:**
+- secondary cost scenarios: `config/cost_scenarios.yaml`, e.g. `neo_broker`: EUR 1 per transaction, 3 bp half-spread, TER on ^GDAXI;
+- in `harness/backtest.py`: `CostModel` with fixed fee + holding cost; a plain float rate keeps the old behaviour;
+- PROTOCOL §10a.9;
+- M3 configs `m3_dqn_base_100k`, `nb_dqn_base`, `nb_dqn_k2` (training budget halved to 100k);
+- `tests/test_costs.py`;
+- the code hash is now taken at run start over `harness/`, `rl/`, `functions.py`, `scrape_data.py` only.
+
+All 71 tests pass on the combined code.
 
 ### 2026-10-05 — Phase 1 / M1: evaluation harness and baselines
 

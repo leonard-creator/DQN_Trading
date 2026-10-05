@@ -65,10 +65,19 @@ class BaselinePolicy:
 
 
 def make_policy(cfg):
-    """Build the policy named in the config. Agent policies are added in M2."""
-    if cfg.get("kind", "baseline") == "baseline":
+    """Build the policy named in the config.
+
+    kind: baseline -> BaselinePolicy (harness/baselines.py)
+    kind: agent    -> DQNPolicy (rl/policy.py), imported lazily so baseline
+                      runs never load TensorFlow.
+    """
+    kind = cfg.get("kind", "baseline")
+    if kind == "baseline":
         return BaselinePolicy(cfg["policy"], cfg.get("policy_params"))
-    raise NotImplementedError(f"policy kind '{cfg.get('kind')}' is not implemented yet")
+    if kind == "agent" and cfg.get("policy") == "dqn":
+        from rl.policy import DQNPolicy
+        return DQNPolicy(cfg)
+    raise NotImplementedError(f"policy kind '{kind}' / '{cfg.get('policy')}' is not implemented")
 
 
 # ---------------------------------------------------------------------------
@@ -82,18 +91,30 @@ class ExperimentResult:
     returns: dict                  # {(eval_set, cost_bps): DataFrame dates x seeds of portfolio net returns}
     summary: dict = field(default_factory=dict)
     output_dir: str = ""
+    code_hash: str = ""            # hash of the code when the run started
 
-    def runs(self, eval_set, cost_bps):
-        """Per-(seed, fold) metric rows of one evaluation set and cost level."""
+    def runs(self, eval_set, cost):
+        """Per-(seed, fold) metric rows of one evaluation set and cost setting.
+
+        cost : a number (PROTOCOL bp level) or a scenario name (str).
+        """
         m = self.metrics
-        return m[(m["eval_set"] == eval_set) & (m["cost_bps"] == cost_bps)]
+        if isinstance(cost, str):
+            return m[(m["eval_set"] == eval_set) & (m["cost"] == cost)]
+        return m[(m["eval_set"] == eval_set) & (m["cost_bps"] == cost)]
+
+
+def cost_label(cost):
+    """'10bp' for a PROTOCOL level, the scenario name for a scenario."""
+    return cost if isinstance(cost, str) else f"{cost}bp"
 
 
 # ---------------------------------------------------------------------------
 # main entry point
 # ---------------------------------------------------------------------------
 def run_experiment(config, seeds=None, eval_sets=None, cost_levels=None, folds=None,
-                   policy=None, unlock=None, log=True, notes="", out_root=None, verbose=True):
+                   policy=None, unlock=None, log=True, notes="", out_root=None, verbose=True,
+                   cost_scenarios=None):
     """Evaluate one configuration over seeds x folds x eval sets x cost levels.
 
     config      : path to an experiment YAML, or an already merged config dict
@@ -107,6 +128,9 @@ def run_experiment(config, seeds=None, eval_sets=None, cost_levels=None, folds=N
     policy      : policy object (default: built from the config)
     unlock      : test-period token (only scripts/final_test.py passes this)
     log         : append a row to experiments/trials.csv and write outputs
+    cost_scenarios : names from config/cost_scenarios.yaml evaluated in addition
+                  to the bp levels (default: config 'cost_scenarios' plus the
+                  agent's training scenario, if any). Secondary results only.
     """
     cfg = load_config(config) if isinstance(config, str) else config
     ev = cfg["evaluation"]
@@ -117,14 +141,45 @@ def run_experiment(config, seeds=None, eval_sets=None, cost_levels=None, folds=N
     primary_cost = costs["primary_bps"]
     if primary_cost not in cost_levels:
         cost_levels.append(primary_cost)
+    if cost_scenarios is None:
+        cost_scenarios = list(cfg.get("cost_scenarios") or [])
+        train_scen = cfg.get("agent", {}).get("env", {}).get("cost_scenario")
+        if train_scen and train_scen not in cost_scenarios:
+            cost_scenarios.append(train_scen)
+    scenarios = bt.load_scenarios() if cost_scenarios else {}
+    unknown = [c for c in cost_scenarios if c not in scenarios]
+    if unknown:
+        raise KeyError(f"unknown cost scenario(s) {unknown}; see config/cost_scenarios.yaml")
+    # cost keys: numbers = PROTOCOL bp levels, strings = named scenarios
+    cost_keys = list(cost_levels) + list(cost_scenarios)
     folds = list(folds or folds_from_config(cfg))
     policy = policy or make_policy(cfg)
     bpy = cfg["data"]["bars_per_year"]
+    run_code_hash = code_hash()                # code as it is when the run STARTS
 
     sets = ticker_sets(cfg)
     tickers_by_set = {s: sets[s] for s in eval_sets}
     all_eval = sorted({t for ts in tickers_by_set.values() for t in ts})
-    prices = load_prices(all_eval, cfg, unlock=unlock)
+    # tickers a learning policy trains on (may differ from the evaluation set)
+    train_set = cfg.get("agent", {}).get("train_tickers")
+    load = sorted(set(all_eval) | set(sets[train_set] if train_set else []))
+    prices = load_prices(load, cfg, unlock=unlock)
+
+    # The trial id and output folder exist before the policy runs, so a
+    # learning policy can store its artifacts (curves, weights) next to the
+    # metrics. Unlogged runs write to experiments/runs/_unlogged/.
+    stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    trial_id = f"{stamp}_{cfg.get('name', 'run')}_{config_hash(cfg)}"
+    root = out_root or repo_path("experiments", "runs")
+    out_dir = os.path.join(root if log else os.path.join(root, "_unlogged"), trial_id)
+    if log or hasattr(policy, "prepare"):
+        os.makedirs(out_dir, exist_ok=True)
+
+    # Learning policies train every (seed, fold) up front, in parallel; the
+    # loop below then only reads their exposures.
+    if hasattr(policy, "prepare"):
+        policy.prepare(prices=prices, folds=folds, seeds=seeds, cfg=cfg,
+                       tickers=all_eval, out_dir=out_dir)
 
     rows = []
     daily = {}                                 # (eval_set, cost, seed) -> list of Series (one per fold)
@@ -139,29 +194,40 @@ def run_experiment(config, seeds=None, eval_sets=None, cost_levels=None, folds=N
                 expo = policy.exposures(fold_prices, fold, seed, cfg, all_eval)
                 if getattr(policy, "deterministic", False):
                     cache[fold.name] = expo
-            for c in cost_levels:
-                rate = bt.cost_rate(c, costs["half_spread_bps"])
-                frames = {}
-                for t in all_eval:
+            for ck in cost_keys:
+                def frame(t, cost):
                     df = fold_prices[t]
                     pos = block_positions(df.index, fold.val_start, fold.val_end)
                     if len(pos) == 0:
-                        continue
-                    res = bt.backtest(df["Close"].to_numpy(), expo[t], pos, rate)
-                    frames[t] = bt.to_frame(res, df.index[pos])
-                if not frames:
+                        return None
+                    res = bt.backtest(df["Close"].to_numpy(), expo[t], pos, cost)
+                    return bt.to_frame(res, df.index[pos])
+
+                if isinstance(ck, str):
+                    # scenario: a fixed fee depends on how many positions share
+                    # the capital, so each evaluation set is backtested separately
+                    per_set = {}
+                    for es, ts in tickers_by_set.items():
+                        fr = {t: frame(t, bt.scenario_cost(scenarios[ck], t, len(ts), bpy)) for t in ts}
+                        per_set[es] = {t: f for t, f in fr.items() if f is not None}
+                else:
+                    rate = bt.cost_rate(ck, costs["half_spread_bps"])
+                    common = {t: f for t in all_eval if (f := frame(t, rate)) is not None}
+                    per_set = {es: {t: common[t] for t in ts if t in common}
+                               for es, ts in tickers_by_set.items()}
+                if not any(per_set.values()):
                     raise ValueError(
                         f"fold {fold.name}: no price data between {fold.val_start.date()} and "
                         f"{fold.val_end.date()} (is this the locked test period?)")
-                for es, ts in tickers_by_set.items():
-                    sub = {t: frames[t] for t in ts if t in frames}
+                for es, sub in per_set.items():
                     port = bt.portfolio(sub)
                     m = mt.portfolio_metrics(port, sub, bpy)
-                    rows.append({"eval_set": es, "cost_bps": c, "seed": seed, "fold": fold.name, **m})
-                    daily.setdefault((es, c, seed), []).append(port["net"])
+                    rows.append({"eval_set": es, "cost_bps": ck if not isinstance(ck, str) else np.nan,
+                                 "cost": cost_label(ck), "seed": seed, "fold": fold.name, **m})
+                    daily.setdefault((es, ck, seed), []).append(port["net"])
         if verbose:
             print(f"  [{cfg.get('name', policy.__class__.__name__)}] fold {fold.name} done "
-                  f"({len(seeds)} seeds, {len(cost_levels)} cost levels)")
+                  f"({len(seeds)} seeds, {len(cost_keys)} cost settings)")
 
     metrics = pd.DataFrame(rows)
     returns = {}
@@ -169,10 +235,11 @@ def run_experiment(config, seeds=None, eval_sets=None, cost_levels=None, folds=N
         returns.setdefault((es, c), {})[seed] = pd.concat(parts).sort_index()
     returns = {k: pd.DataFrame(v) for k, v in returns.items()}
 
-    result = ExperimentResult(cfg=cfg, trial_id="", metrics=metrics, returns=returns)
-    result.summary = summarize(result, eval_sets, cost_levels, primary_cost)
+    result = ExperimentResult(cfg=cfg, trial_id=trial_id, metrics=metrics, returns=returns,
+                              output_dir=out_dir, code_hash=run_code_hash)
+    result.summary = summarize(result, eval_sets, cost_keys, primary_cost)
     if log:
-        _persist(result, eval_sets[0], primary_cost, seeds, folds, notes, out_root)
+        _persist(result, eval_sets[0], primary_cost, seeds, folds, notes)
     return result
 
 
@@ -189,24 +256,21 @@ def summarize(result, eval_sets, cost_levels, primary_cost):
             sr = [mt.return_metrics(r[s].dropna().to_numpy())["sharpe_pp"] for s in r.columns]
             agg["sr_pp_median"] = float(np.median(sr))
             agg["fold_sharpe_median"] = runs.groupby("fold")["sharpe"].median().round(4).to_dict()
-            out[f"{es}@{c}bp"] = agg
+            out[f"{es}@{cost_label(c)}"] = agg
     return out
 
 
-def _persist(result, primary_set, primary_cost, seeds, folds, notes, out_root):
+def _persist(result, primary_set, primary_cost, seeds, folds, notes):
     cfg = result.cfg
     chash = config_hash(cfg)
-    stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-    result.trial_id = f"{stamp}_{cfg.get('name', 'run')}_{chash}"
-    out_dir = os.path.join(out_root or repo_path("experiments", "runs"), result.trial_id)
-    os.makedirs(out_dir, exist_ok=True)
-    result.output_dir = out_dir
+    out_dir = result.output_dir
 
     with open(os.path.join(out_dir, "config.yaml"), "w") as fh:
         yaml.safe_dump(cfg, fh, sort_keys=False)
     result.metrics.to_csv(os.path.join(out_dir, "metrics.csv"), index=False)
     for (es, c), df in result.returns.items():
-        df.to_csv(os.path.join(out_dir, f"returns_{es}_c{c}.csv"), index_label="Date")
+        tag = f"scen-{c}" if isinstance(c, str) else f"c{c}"      # scenario vs bp level
+        df.to_csv(os.path.join(out_dir, f"returns_{es}_{tag}.csv"), index_label="Date")
     with open(os.path.join(out_dir, "summary.json"), "w") as fh:
         json.dump(result.summary, fh, indent=2, default=float)
 
@@ -218,7 +282,7 @@ def _persist(result, primary_set, primary_cost, seeds, folds, notes, out_root):
         "name": cfg.get("name", ""),
         "policy": cfg.get("policy", ""),
         "config_hash": chash,
-        "code_hash": code_hash(),
+        "code_hash": result.code_hash or code_hash(),
         "git_commit": tr.git_commit(),
         "protocol_version": cfg.get("protocol_version", ""),
         "seeds": f"{min(seeds)}-{max(seeds)} (n={len(seeds)})",
@@ -272,6 +336,37 @@ def compare_to_baselines(agent, baselines, eval_set="train", cost_bps=None,
     df = pd.DataFrame(out)
     df["p_holm"] = st.holm(df["p_value"].to_numpy()) if len(df) else []
     return df
+
+
+def load_result(output_dir):
+    """Rebuild an ExperimentResult from a run folder (no recomputation).
+
+    Lets reports recompute statistics from stored outputs, e.g.
+    load_result(trials row 'output_dir').
+    """
+    if not os.path.isabs(output_dir):
+        output_dir = repo_path(output_dir)
+    with open(os.path.join(output_dir, "config.yaml")) as fh:
+        cfg = yaml.safe_load(fh)
+    metrics = pd.read_csv(os.path.join(output_dir, "metrics.csv"))
+    returns = {}
+    for name in os.listdir(output_dir):
+        if name.startswith("returns_") and name.endswith(".csv"):
+            stem = name[len("returns_"):-len(".csv")]
+            if "_scen-" in stem:
+                es, c = stem.split("_scen-", 1)                 # scenario file
+            else:
+                es, c = stem.rsplit("_c", 1)
+                c = int(c)
+            df = pd.read_csv(os.path.join(output_dir, name), index_col="Date", parse_dates=True)
+            df.columns = [int(s) for s in df.columns]
+            returns[(es, c)] = df
+    summary = {}
+    if os.path.exists(os.path.join(output_dir, "summary.json")):
+        with open(os.path.join(output_dir, "summary.json")) as fh:
+            summary = json.load(fh)
+    return ExperimentResult(cfg=cfg, trial_id=os.path.basename(output_dir), metrics=metrics,
+                            returns=returns, summary=summary, output_dir=output_dir)
 
 
 def seed_mean_returns(result, eval_set, cost_bps):

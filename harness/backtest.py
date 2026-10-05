@@ -8,7 +8,9 @@ and held until the close of bar t+1. For a return date i:
 
     gross[i]    = exposure[i-1] * (close[i] / close[i-1] - 1)
     turnover[i] = |exposure[i-1] - exposure[i-2]|      (the trade made at bar i-1)
-    cost[i]     = cost_rate * turnover[i]
+    cost[i]     = rate     * turnover[i]                 proportional part
+                + fee_frac * 1[turnover[i] > 0]          fixed fee per transaction
+                + hold     * |exposure[i-1]|             holding cost (e.g. TER) per bar
     net[i]      = gross[i] - cost[i]
 
 Every block starts FLAT: the exposure before the first decision is 0, so
@@ -16,12 +18,26 @@ entering a position on the first day is charged. The position is not
 liquidated at the end of a block (it is marked to market), which treats all
 strategies the same way.
 
-Cost rate = (c + half_spread) / 10,000 per unit of exposure traded, where c
-and the half-spread are in basis points (PROTOCOL §7).
+Cost models
+-----------
+* PROTOCOL cost levels (H1): rate = (c + half_spread) / 10,000 per unit of
+  exposure traded; no fixed fee, no holding cost. A plain float passed as the
+  cost is exactly this, so the M1/M2 numbers are unchanged.
+* Named cost SCENARIOS (config/cost_scenarios.yaml), e.g. "neo_broker": a fixed
+  EUR fee for EVERY transaction (each buy and each sell; a round trip pays it
+  twice), a spread, and a TER on held exposure. A fixed fee is a fraction of
+  the capital behind the position: fee_frac = fee_eur / (capital_eur / N),
+  where N = number of tickers sharing the capital in the portfolio. Scenarios
+  are secondary results; they never replace the H1 cost level.
 """
+
+import copy
+import os
+from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
+import yaml
 
 
 def cost_rate(c_bps, half_spread_bps):
@@ -29,24 +45,86 @@ def cost_rate(c_bps, half_spread_bps):
     return (float(c_bps) + float(half_spread_bps)) / 1e4
 
 
-def backtest(close, exposure, val_positions, rate):
+@dataclass(frozen=True)
+class CostModel:
+    """Costs of one position (one ticker sleeve), all as fractions of its capital.
+
+    rate     : proportional cost per unit of exposure traded
+    fee_frac : fixed cost per transaction (fee_eur / capital behind the position)
+    hold     : cost per bar per unit of exposure held (TER / bars_per_year)
+    """
+    rate: float = 0.0
+    fee_frac: float = 0.0
+    hold: float = 0.0
+
+
+def as_cost_model(cost):
+    """Accept a CostModel or a plain proportional rate (the PROTOCOL levels)."""
+    return cost if isinstance(cost, CostModel) else CostModel(rate=float(cost))
+
+
+# ---------------------------------------------------------------------------
+# named scenarios
+# ---------------------------------------------------------------------------
+SCENARIO_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                             "config", "cost_scenarios.yaml")
+
+
+def load_scenarios(path=SCENARIO_FILE):
+    """All named scenarios, with `base:` inheritance resolved."""
+    with open(path) as fh:
+        raw = yaml.safe_load(fh)["scenarios"]
+
+    def resolve(name, depth=0):
+        if depth > 5:
+            raise RecursionError(name)
+        s = copy.deepcopy(raw[name])
+        parent = s.pop("base", None)
+        if parent is None:
+            return s
+        merged = resolve(parent, depth + 1)
+        merged.update(s)
+        return merged
+
+    return {name: resolve(name) for name in raw}
+
+
+def scenario_cost(scenario, ticker, n_positions, bars_per_year=252):
+    """CostModel of one ticker sleeve under a named scenario dict.
+
+    n_positions : number of tickers sharing the scenario's capital (portfolio
+                  size), so each sleeve holds capital / n_positions.
+    """
+    sleeve = float(scenario["capital_eur"]) / max(1, int(n_positions))
+    ter_bps = scenario.get("ter_bps", {}).get(ticker, 0.0)
+    return CostModel(rate=cost_rate(scenario.get("c_bps", 0.0), scenario.get("half_spread_bps", 0.0)),
+                     fee_frac=float(scenario.get("fee_eur", 0.0)) / sleeve,
+                     hold=float(ter_bps) / 1e4 / bars_per_year)
+
+
+# ---------------------------------------------------------------------------
+# backtest
+# ---------------------------------------------------------------------------
+def backtest(close, exposure, val_positions, cost):
     """Net daily returns of one ticker over one evaluation block.
 
     close         : 1-D array of closing prices (full history of the ticker)
     exposure      : 1-D array of the same length; exposure[t] decided at bar t.
                     Only the decision bars val_positions-1 are read.
     val_positions : integer RETURN positions of the block (harness.splits.block_positions)
-    rate          : cost per unit of exposure traded (see cost_rate)
+    cost          : CostModel, or a float = proportional rate (see cost_rate)
 
     Returns a dict of arrays aligned with val_positions:
-    exposure (held during the return day), gross, turnover, cost, net.
+    exposure (held during the return day), gross, turnover, trades (0/1), cost, net.
     """
+    cm = as_cost_model(cost)
     close = np.asarray(close, dtype=np.float64)
     exposure = np.asarray(exposure, dtype=np.float64)
     pos = np.asarray(val_positions, dtype=np.int64)
     if len(pos) == 0:
         empty = np.zeros(0)
-        return {"exposure": empty, "gross": empty, "turnover": empty, "cost": empty, "net": empty}
+        return {"exposure": empty, "gross": empty, "turnover": empty, "trades": empty,
+                "cost": empty, "net": empty}
     if pos[0] < 1:
         raise ValueError("an evaluation block needs at least one bar before it (the first decision bar)")
     if not np.all(np.diff(pos) == 1):
@@ -59,8 +137,9 @@ def backtest(close, exposure, val_positions, rate):
     asset_ret = close[pos] / close[pos - 1] - 1.0
     gross = held * asset_ret
     turnover = np.abs(held - prev)
-    cost = rate * turnover
-    return {"exposure": held, "gross": gross, "turnover": turnover,
+    trades = (turnover > 1e-12).astype(np.float64)            # one transaction per change of exposure
+    cost = cm.rate * turnover + cm.fee_frac * trades + cm.hold * np.abs(held)
+    return {"exposure": held, "gross": gross, "turnover": turnover, "trades": trades,
             "cost": cost, "net": gross - cost}
 
 

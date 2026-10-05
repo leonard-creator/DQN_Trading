@@ -1,0 +1,7 @@
+# M2 ablation: base + 3-step returns (Hessel et al. 2018: n = 3-5). One change only.
+# The purge grows automatically to W + n if that exceeds the protocol's 25 bars.
+inherit: config/experiments/m2_dqn_base.yaml
+name: m2_dqn_nstep
+agent:
+  algo:
+    n_step: 3

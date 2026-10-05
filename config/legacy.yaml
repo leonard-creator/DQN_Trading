@@ -1,0 +1,41 @@
+# LEGACY: the old algorithmic choices, run through the new environment and harness
+# so they are measured exactly like the new agent (spec "Engineering rules").
+#
+# Reproduced from the code before this refactor (agent/agent.py, env.py,
+# train.py at commit 076989b, and the original q-trader reward):
+#   * MSE loss (the old tf.function step computed squared error), no reward normalisation
+#   * GlobalAveragePooling1D after the conv encoder
+#   * "profit" reward: realised gain when a unit is sold, costs not in the reward
+#   * no action masking: an invalid buy/sell silently becomes hold
+#   * every episode walks the whole training range from its first bar; the last step is terminal
+#   * Double DQN with a HARD target copy every 500 env steps (= 125 updates at 1 update per 4 steps)
+#   * constant learning rate 1e-3, no gradient clipping, epsilon decayed to 0.01 over 60 % of training
+#
+# Kept as in the new setup so that only the algorithm differs: features, window,
+# capital-fraction positions (K = 4), transaction-cost model, data, training budget.
+# The exact original code (unit positions, flat EUR costs) is still runnable with
+# `python train.py ...` and is preserved in git history (e.g. d607a54, 076989b).
+
+inherit: config/experiments/m2_dqn_base.yaml
+name: legacy
+
+agent:
+  env:
+    reward: profit
+    reward_clip: null
+    episode: full_series
+    action_masking: false
+  network:
+    pooling: gap
+  algo:
+    loss: mse
+    reward_norm: none
+    lr: 1.0e-3
+    lr_schedule: constant
+    grad_clip_norm: null
+    target_update: hard
+    hard_every: 125
+    batch_size: 64
+  train:
+    eps_end: 0.01
+    eps_decay_frac: 0.6
