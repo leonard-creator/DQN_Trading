@@ -1,0 +1,32 @@
+{
+  "EFA.csv": {
+    "source": "yfinance auto_adjust=False actions=True EFA",
+    "bytes": 758372,
+    "sha256": "fbb42a31da6215416fc036de1cc59e000d08ec09381f08c2e5ef19a371e0602b",
+    "downloaded_at": "2026-10-06T22:51:33"
+  },
+  "GDAXI.csv": {
+    "source": "yfinance auto_adjust=False actions=True ^GDAXI",
+    "bytes": 727737,
+    "sha256": "4f9aa1e6286615907fe70fc0ba324d78a530fdd16e50130daf59b766cb347d98",
+    "downloaded_at": "2026-10-06T22:51:36"
+  },
+  "GLD.csv": {
+    "source": "yfinance auto_adjust=False actions=True GLD",
+    "bytes": 666347,
+    "sha256": "ed131ef1cdbc07f2e4c572a0d0ebfe9948d6d4ab979d20fc59cfa81c8b6ba5da",
+    "downloaded_at": "2026-10-06T22:51:35"
+  },
+  "SPY.csv": {
+    "source": "yfinance auto_adjust=False actions=True SPY",
+    "bytes": 809157,
+    "sha256": "86629975eca5518401674398da8a1a8c63375fdb40a77b27552037e771c60b64",
+    "downloaded_at": "2026-10-06T22:51:32"
+  },
+  "TLT.csv": {
+    "source": "yfinance auto_adjust=False actions=True TLT",
+    "bytes": 731952,
+    "sha256": "00a7e3fc147845f10220e0d184dfbe7a98d8164f87cca58688eadb432e62a6e2",
+    "downloaded_at": "2026-10-06T22:51:34"
+  }
+}

@@ -1,0 +1,20 @@
+# PROTOCOL Part II, Step 0d (one YAML per v2 configuration in config/v2/, §V12 item 6):
+# R0′ = the v1 reference R0 (m4_cross_resid_transformer)
+# with the v2 common settings of §V6.0 and nothing else:
+#   - pipeline v2 (§V2.3, Step 0b): Q1 close-time lag of ^GDAXI's residual features,
+#     Q4 mask of vol_rel20 on zero/constant-volume bars;
+#   - warm-up rule (§V0 item 6): availability flag resid_avail for the residual group,
+#     0 (and the group 0) until 450 bars of history exist; z-score minimum 126 bars;
+#   - purge P = W + H_max = 20 + 20 = 40 bars (§V0 item 4), also around inner validation;
+#   - fixed training length, no early stopping (as in v1).
+# V1 is compared against R0′, not R0 (§V0 item 1). 10 seeds x 5 folds = 50 runs, +1 trial.
+# Prepared 2026-10-06 and NOT launched: Step 0d starts after the owner has read the 0a/0b report.
+inherit: config/experiments/m4_cross_resid_transformer.yaml
+name: v2_R0prime
+splits:
+  purge_horizon: 20            # P = purge_window (20) + 20 = 40
+agent:
+  features: [log_ret, p_sma20, p_sma50, bb_pctb, rsi14, macd_hist, vol_rel20, atr14_p, sigma20,
+             vix_lag1, vix_chg_lag1, resid, resid_cum30, resid_avail]
+  m4: {pipeline: v2, early_close_tickers: ["^GDAXI"], mask_volume: true, warmup_bars: 450,
+       z_min_periods: 126}

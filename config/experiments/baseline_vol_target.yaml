@@ -1,0 +1,8 @@
+# DESCRIPTIVE baseline (PROTOCOL Part II, step 0a): volatility-managed exposure,
+# min(1, (median vol / current vol)^2) on the 1/4 grid (Moreira & Muir 2017).
+# Not one of the four H1 baselines; reported next to them.
+name: baseline_vol_target
+kind: baseline
+policy: vol_target
+policy_params: {}
+eval_sets: [train, leave_out, single]

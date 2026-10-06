@@ -1,0 +1,206 @@
+{
+  "DBC.csv": {
+    "source": "yfinance auto_adjust=True DBC",
+    "bytes": 484082,
+    "sha256": "7d81db81337a1359f2ca3e3dc414ac68baef06946c3c6c47adcafb4c7f5982e7",
+    "downloaded_at": "2026-10-06T22:51:30"
+  },
+  "DIA.csv": {
+    "source": "yfinance auto_adjust=True DIA",
+    "bytes": 619546,
+    "sha256": "92f0c1cc86cecb4c8417ad26b5b3fb6b1c05440b5a1928545bce4d71596fdf9d",
+    "downloaded_at": "2026-10-06T22:51:02"
+  },
+  "EEM.csv": {
+    "source": "yfinance auto_adjust=True EEM",
+    "bytes": 551636,
+    "sha256": "172472fca40993f7dbe20193a24a1c9cf6e4296836340ba6b04836a7ae6c98f4",
+    "downloaded_at": "2026-10-06T22:51:14"
+  },
+  "EFA.csv": {
+    "source": "yfinance auto_adjust=True EFA",
+    "bytes": 584421,
+    "sha256": "44f4cdfa65119c57c9568b7fa6f0c11c62b029ceb451dbd17e7591c6fa66dde4",
+    "downloaded_at": "2026-10-06T22:51:13"
+  },
+  "EWA.csv": {
+    "source": "yfinance auto_adjust=True EWA",
+    "bytes": 623571,
+    "sha256": "a39eae1e0ee9309fa943109712bde93694223188bd9708f912a8ff55b2b71ebf",
+    "downloaded_at": "2026-10-06T22:51:19"
+  },
+  "EWC.csv": {
+    "source": "yfinance auto_adjust=True EWC",
+    "bytes": 620004,
+    "sha256": "bd735fdb049916955bde70403fc11f565ffa5be84ebd8523257776335ace5e28",
+    "downloaded_at": "2026-10-06T22:51:20"
+  },
+  "EWG.csv": {
+    "source": "yfinance auto_adjust=True EWG",
+    "bytes": 622865,
+    "sha256": "95d3c8ca0b44e8855bc13921e9ee401faa9d42bd8d932d96223714e543a33fca",
+    "downloaded_at": "2026-10-06T22:51:16"
+  },
+  "EWJ.csv": {
+    "source": "yfinance auto_adjust=True EWJ",
+    "bytes": 619744,
+    "sha256": "303699566855812352b7f8899486a14230f6c19b577b8e942282889cbf6b0315",
+    "downloaded_at": "2026-10-06T22:51:15"
+  },
+  "EWU.csv": {
+    "source": "yfinance auto_adjust=True EWU",
+    "bytes": 622724,
+    "sha256": "eb5c626e3483e8cb67d1b91834dcb76de7201bb5e48bb6cd5bb238b7aa079581",
+    "downloaded_at": "2026-10-06T22:51:17"
+  },
+  "EWZ.csv": {
+    "source": "yfinance auto_adjust=True EWZ",
+    "bytes": 614417,
+    "sha256": "a97853a1588a910d63d614f857177f6af3c79a21ab093b2ba4a8d9a133dd2648",
+    "downloaded_at": "2026-10-06T22:51:18"
+  },
+  "FXI.csv": {
+    "source": "yfinance auto_adjust=True FXI",
+    "bytes": 518169,
+    "sha256": "e27f0880a55b2080e590e54c7bf1011acf9b95c34b2bb7701c83c614bcb735dc",
+    "downloaded_at": "2026-10-06T22:51:21"
+  },
+  "GDAXI.csv": {
+    "source": "yfinance auto_adjust=True ^GDAXI",
+    "bytes": 566161,
+    "sha256": "28d4da23cab95362d2b3709d4b046167c5cdccc856ea3a6cbd5292c4a896dcdc",
+    "downloaded_at": "2026-10-06T22:51:21"
+  },
+  "GLD.csv": {
+    "source": "yfinance auto_adjust=True GLD",
+    "bytes": 501004,
+    "sha256": "1aff058c007cd2dded5783743eb814888f83d99ef12dbe64b93f18d54e9b327d",
+    "downloaded_at": "2026-10-06T22:51:28"
+  },
+  "IEF.csv": {
+    "source": "yfinance auto_adjust=True IEF",
+    "bytes": 550422,
+    "sha256": "7d9b132324662a177b9edf0486f4a15ed571e20a56a42186b35b5e5b3930dfa9",
+    "downloaded_at": "2026-10-06T22:51:23"
+  },
+  "IWM.csv": {
+    "source": "yfinance auto_adjust=True IWM",
+    "bytes": 617887,
+    "sha256": "98a9dfc15810a2d917e77c133bc1380806284f29ed9827712538c0fb6a7a736f",
+    "downloaded_at": "2026-10-06T22:51:01"
+  },
+  "IYR.csv": {
+    "source": "yfinance auto_adjust=True IYR",
+    "bytes": 607452,
+    "sha256": "691d232d257592a322e4686b1f33b7ce7fa9a700cc6c0f3683c9f1eddc8a9157",
+    "downloaded_at": "2026-10-06T22:51:27"
+  },
+  "LQD.csv": {
+    "source": "yfinance auto_adjust=True LQD",
+    "bytes": 555395,
+    "sha256": "aae14c7a2439961d75d4769e66a26bad054f99e00ddda4c3124b5ed18ae86488",
+    "downloaded_at": "2026-10-06T22:51:24"
+  },
+  "MDY.csv": {
+    "source": "yfinance auto_adjust=True MDY",
+    "bytes": 618148,
+    "sha256": "da9acae1867600dab4063502c4e43c736b0903b5cd436713a9aec93b4f3b8f96",
+    "downloaded_at": "2026-10-06T22:51:03"
+  },
+  "QQQ.csv": {
+    "source": "yfinance auto_adjust=True QQQ",
+    "bytes": 627998,
+    "sha256": "235378bebcea6be4ffb31e18de1849cdb0b6ae9637f9d240e8ff516b4c27ee90",
+    "downloaded_at": "2026-10-06T22:51:00"
+  },
+  "SLV.csv": {
+    "source": "yfinance auto_adjust=True SLV",
+    "bytes": 471956,
+    "sha256": "d016745381aca6fdbf56d36d6ca96886487307cf6109f685ccabd86945eea722",
+    "downloaded_at": "2026-10-06T22:51:28"
+  },
+  "SPY.csv": {
+    "source": "yfinance auto_adjust=True SPY",
+    "bytes": 626220,
+    "sha256": "5c70152b4d90f4be415589ae80f521f6a0608c93927c34a12f5b77e73660216b",
+    "downloaded_at": "2026-10-06T22:50:59"
+  },
+  "TIP.csv": {
+    "source": "yfinance auto_adjust=True TIP",
+    "bytes": 520728,
+    "sha256": "eefea862615c54346af56c22a651b67cbd7f577c97ffc657b9aaad2e827c55ae",
+    "downloaded_at": "2026-10-06T22:51:25"
+  },
+  "TLT.csv": {
+    "source": "yfinance auto_adjust=True TLT",
+    "bytes": 557178,
+    "sha256": "52856d223adc2e73235e511fa6e3de1b3a44d0477c3c0b8473d0cd3db6039aa2",
+    "downloaded_at": "2026-10-06T22:51:22"
+  },
+  "USO.csv": {
+    "source": "yfinance auto_adjust=True USO",
+    "bytes": 458558,
+    "sha256": "bf85692ef6f1a911163c37535391b73e581d2baac47ef193495994ea040e852d",
+    "downloaded_at": "2026-10-06T22:51:29"
+  },
+  "VIX.csv": {
+    "source": "yfinance auto_adjust=True ^VIX",
+    "bytes": 575112,
+    "sha256": "2a8b84cc05c3752f9e17666f19bdcfa1e85c61ff9bcf0dc6213c5912405b181d",
+    "downloaded_at": "2026-10-06T22:51:31"
+  },
+  "XLB.csv": {
+    "source": "yfinance auto_adjust=True XLB",
+    "bytes": 624860,
+    "sha256": "bff8c68182e81f9a57e5a675e5f8997eb29ce59db4392936dda48a224b44cb57",
+    "downloaded_at": "2026-10-06T22:51:04"
+  },
+  "XLE.csv": {
+    "source": "yfinance auto_adjust=True XLE",
+    "bytes": 628730,
+    "sha256": "97c1738951bd8ba75e9882a5e2473090f6c58a9812b25967c91bb02155bfb015",
+    "downloaded_at": "2026-10-06T22:51:05"
+  },
+  "XLF.csv": {
+    "source": "yfinance auto_adjust=True XLF",
+    "bytes": 631013,
+    "sha256": "07eec28eaa60c6603c84673fb5167e35339e1dc2ebf2fe4781f828f71616500f",
+    "downloaded_at": "2026-10-06T22:51:06"
+  },
+  "XLI.csv": {
+    "source": "yfinance auto_adjust=True XLI",
+    "bytes": 623192,
+    "sha256": "fda6dd1e8224a157fffb9c8ef6a3edba89ea86ce20c572324c622ccfa7721f7d",
+    "downloaded_at": "2026-10-06T22:51:07"
+  },
+  "XLK.csv": {
+    "source": "yfinance auto_adjust=True XLK",
+    "bytes": 623259,
+    "sha256": "8f7ea08c33316cddbfb17ab643a7a3581de33cc83db628a78bb9d899ade98587",
+    "downloaded_at": "2026-10-06T22:51:08"
+  },
+  "XLP.csv": {
+    "source": "yfinance auto_adjust=True XLP",
+    "bytes": 623103,
+    "sha256": "be8c49571ce816e5edfa6ded595d8ea068a93a1a47343960abbc2acd893c56c5",
+    "downloaded_at": "2026-10-06T22:51:09"
+  },
+  "XLU.csv": {
+    "source": "yfinance auto_adjust=True XLU",
+    "bytes": 624785,
+    "sha256": "06e67c0b10a9b71af4632e9860d277fc62787f69b0758e885a8f91265a806ac4",
+    "downloaded_at": "2026-10-06T22:51:10"
+  },
+  "XLV.csv": {
+    "source": "yfinance auto_adjust=True XLV",
+    "bytes": 623346,
+    "sha256": "bc5ba58355113e970d51c83abd489dfa5ecf6d3a0ec20280761e3cc6383170a5",
+    "downloaded_at": "2026-10-06T22:51:11"
+  },
+  "XLY.csv": {
+    "source": "yfinance auto_adjust=True XLY",
+    "bytes": 623354,
+    "sha256": "f265e1bc2a4337f85074cc74b501fad1b704e8bfd8470798d55743c3cce3a47c",
+    "downloaded_at": "2026-10-06T22:51:12"
+  }
+}

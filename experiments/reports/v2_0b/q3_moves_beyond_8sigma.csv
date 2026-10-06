@@ -1,0 +1,13 @@
+ticker,date,return,z,next_day_return,close_within_high_low,reverts_next_day,tickers_beyond_4sigma,class,event
+LQD,2008-09-16,-0.06345056340887323,-15.112996751200454,-0.045811590753833564,True,False,1,"single-ticker, genuine",Lehman week (bankruptcy filed 2008-09-15)
+GLD,2013-04-15,-0.0878082643808128,-8.037208429640156,0.011347235708379255,True,False,12,market-wide,gold crash
+SLV,2013-04-15,-0.12618672655902163,-8.857068018246675,0.02625622090084523,True,False,12,market-wide,gold crash
+EWU,2016-06-24,-0.1196375117980557,-8.55286166424422,-0.03980774049985214,True,False,18,market-wide,UK Brexit referendum result
+EWG,2017-04-24,0.04657733481935078,8.078482303200724,0.008091456131613661,True,False,3,market-wide,"French presidential election, first round"
+EWZ,2017-05-18,-0.1632598326332545,-9.940508211625193,0.0674807243706732,True,False,1,"single-ticker, genuine",Brazil: Temer/JBS recordings scandal
+^VIX,2018-02-05,1.1559792516603906,9.731184273753477,-0.196677390477199,True,False,18,market-wide,volatility spike ('Volmageddon')
+XLE,2020-03-09,-0.2014117424219639,-9.948788101394156,0.04743659449920856,True,False,22,market-wide,COVID-19 sell-off and OPEC+ oil price war
+EWA,2020-03-09,-0.11830153866279547,-8.795723395299465,0.08600925370921941,True,False,22,market-wide,COVID-19 sell-off and OPEC+ oil price war
+EWC,2020-03-09,-0.1241757061335168,-11.33026611011226,0.024675853105820433,True,False,22,market-wide,COVID-19 sell-off and OPEC+ oil price war
+USO,2020-03-09,-0.2531500202969871,-11.205246597125955,0.11042941599661416,True,False,22,market-wide,COVID-19 sell-off and OPEC+ oil price war
+FXI,2022-03-16,0.2124120720775795,8.860817790008214,-0.03686764191197456,True,False,2,"single-ticker, genuine",China: State Council pledge to support markets
