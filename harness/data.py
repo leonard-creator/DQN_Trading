@@ -200,15 +200,27 @@ def ticker_sets(cfg):
     leave_out : the 7 held-out tickers (M4 / M5 only)
     single    : the single-asset reference (^GDAXI)
     all       : everything
+    plus any `extra_ticker_sets` of the experiment config
     """
     universe = all_tickers(cfg)
     leave = list(cfg["universe"]["leave_out"])
-    return {
+    sets = {
         "train": [t for t in universe if t not in leave],
         "leave_out": leave,
         "single": [cfg["universe"]["single_asset"]],
         "all": universe,
     }
+    # Experiment configs may define extra evaluation sets, e.g. the 2-ETF
+    # deployment portfolio of the neo-broker scenario (M4). They live in the
+    # experiment YAML, not in protocol.yaml, so no existing hash changes.
+    for name, tickers in (cfg.get("extra_ticker_sets") or {}).items():
+        unknown = [t for t in tickers if t not in universe]
+        if unknown:
+            raise KeyError(f"extra ticker set '{name}' uses tickers outside the universe: {unknown}")
+        if name in sets:
+            raise KeyError(f"extra ticker set '{name}' would overwrite a PROTOCOL set")
+        sets[name] = list(tickers)
+    return sets
 
 
 def bucket_of(cfg):

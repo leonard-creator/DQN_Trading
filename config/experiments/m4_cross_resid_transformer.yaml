@@ -1,0 +1,12 @@
+# M4 ablation (plan §7 Track A2): m4_cross_resid with the convolutional-transformer
+# encoder of Guijarro-Ordonez, Pelger & Zanotti (2026) instead of conv + flatten:
+# 2 causal conv layers (8 filters, kernel 2, instance norm, residual connection),
+# one 4-head self-attention layer, signal = last time step. One change only.
+inherit: config/experiments/m4_cross_resid.yaml
+name: m4_cross_resid_transformer
+agent:
+  network:
+    arch: conv_transformer
+    kernel_size: 2
+    transformer_dim: 8
+    transformer_heads: 4

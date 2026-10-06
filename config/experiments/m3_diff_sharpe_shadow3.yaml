@@ -1,0 +1,8 @@
+# M3 reward variant (added from M2 learnings: ~120 transactions/yr without skill):
+# the reference diff_sharpe reward, but during TRAINING trades look 3x as expensive
+# (shadow cost). Measured returns and evaluation costs are unchanged (10 bp + 1 bp).
+inherit: config/experiments/m3_dqn_base_100k.yaml
+name: m3_diff_sharpe_shadow3
+agent:
+  env:
+    cost_penalty_mult: 3

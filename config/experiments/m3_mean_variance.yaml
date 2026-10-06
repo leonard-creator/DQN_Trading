@@ -1,0 +1,11 @@
+# M3 reward variant: mean-variance step reward (plan Phase B, spec Phase 3).
+#   reward = x - (lambda/2) x^2,  x = net return / ex-ante daily volatility
+# Measuring the return in "typical daily moves" keeps lambda scale-free (W9).
+# lambda = 0.5 is the plan's Phase-F start value. Everything else = m3_dqn_base_100k.
+inherit: config/experiments/m3_dqn_base_100k.yaml
+name: m3_mean_variance
+agent:
+  env:
+    reward: mean_variance
+    mv_lambda: 0.5
+    reward_clip: 10.0     # vol units: stops a single crash day from dominating the reward scale

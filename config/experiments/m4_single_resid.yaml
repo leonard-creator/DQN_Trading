@@ -1,0 +1,8 @@
+# M4 reference for the go criterion "cross-asset >= single-asset on leave-assets-out":
+# identical to m4_cross_resid (same features, same residual factors from the 26
+# training ETFs, same reward and budget) but TRAINED ON ^GDAXI ONLY.
+inherit: config/experiments/m4_cross_resid.yaml
+name: m4_single_resid
+eval_sets: [single, leave_out, deploy2]
+agent:
+  train_tickers: single

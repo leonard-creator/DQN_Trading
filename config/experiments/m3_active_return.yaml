@@ -1,0 +1,9 @@
+# M3 reward variant (added from M1/M2 learnings): return BEYOND being fully invested.
+#   reward = (net return - buy-and-hold return) / ex-ante daily volatility
+# Rewards only what H1 tests: deviating from buy-and-hold must pay for itself.
+inherit: config/experiments/m3_dqn_base_100k.yaml
+name: m3_active_return
+agent:
+  env:
+    reward: active_return
+    reward_clip: 10.0

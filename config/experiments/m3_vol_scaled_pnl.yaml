@@ -1,0 +1,9 @@
+# M3 reward variant: volatility-scaled P&L (reward side of Zhang, Zohren & Roberts 2019).
+#   reward = net return / ex-ante daily volatility
+# Exposures stay on the PROTOCOL grid (no vol-targeted position sizing).
+inherit: config/experiments/m3_dqn_base_100k.yaml
+name: m3_vol_scaled_pnl
+agent:
+  env:
+    reward: vol_scaled_pnl
+    reward_clip: 10.0

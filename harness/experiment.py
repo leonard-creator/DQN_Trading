@@ -163,6 +163,13 @@ def run_experiment(config, seeds=None, eval_sets=None, cost_levels=None, folds=N
     # tickers a learning policy trains on (may differ from the evaluation set)
     train_set = cfg.get("agent", {}).get("train_tickers")
     load = sorted(set(all_eval) | set(sets[train_set] if train_set else []))
+    if train_set:
+        # context series (^VIX) are features for agents; same test-period guard
+        load = sorted(set(load) | set(cfg["universe"].get("context", [])))
+        # tickers whose returns define the residual factors (M4 features)
+        fset = cfg["agent"].get("m4", {}).get("factor_set")
+        if fset:
+            load = sorted(set(load) | set(sets[fset]))
     prices = load_prices(load, cfg, unlock=unlock)
 
     # The trial id and output folder exist before the policy runs, so a

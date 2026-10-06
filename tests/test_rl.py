@@ -230,3 +230,38 @@ def test_dqn_experiment_runs_and_is_deterministic(synthetic_agent_cfg):
     assert len(a.metrics) == 2                                       # 2 folds x 1 seed x 1 cost
     expo = a.metrics["exposure"].to_numpy()
     assert np.all((expo >= 0) & (expo <= 1))
+
+
+# --- conv-transformer encoder (plan §7 A2) -------------------------------------------
+def test_conv_transformer_builds_trains_and_uses_the_whole_window():
+    import tensorflow as tf
+    from rl.agent import DQNAgent
+    from rl.networks import build_q_network, conv_transformer_encoder
+    net = {"arch": "conv_transformer", "kernel_size": 2, "transformer_dim": 8, "transformer_heads": 4,
+           "hidden": [16]}
+    model = build_q_network(20, 13, 7, 3, net)
+    rng = np.random.default_rng(0)
+    m = rng.standard_normal((4, 20, 13)).astype(np.float32)
+    p = rng.standard_normal((4, 7)).astype(np.float32)
+    assert model([m, p]).shape == (4, 3)
+    # the last-step signal reacts to the first AND the last bar of the window
+    inp = tf.keras.Input((20, 13))
+    sig, _ = conv_transformer_encoder(inp, net)
+    enc = tf.keras.Model(inp, sig)
+    base = enc(m).numpy()
+    for j in (0, 19):
+        m2 = m.copy()
+        m2[:, j, :] += 1.0
+        assert not np.allclose(enc(m2).numpy(), base), f"bar {j} has no influence"
+    # one gradient step through the full agent works
+    algo = {"gamma": 0.9, "loss": "huber", "lr": 1e-3, "lr_schedule": "constant"}
+    agent = DQNAgent(20, 13, 7, 3, net, algo, total_updates=5)
+    d = MarketData(["X"], [100 + np.arange(300.0)], [rng.standard_normal((300, 13)).astype(np.float32)],
+                   20, [0.05])
+    batch = {"g": np.arange(30, 62), "pos": np.zeros((32, 7), np.float32), "action": np.zeros(32, int),
+             "reward": np.ones(32, np.float32), "g2": np.arange(31, 63), "pos2": np.zeros((32, 7), np.float32),
+             "mask2": np.ones((32, 3), bool), "discount": np.full(32, 0.9, np.float32),
+             "weights": np.ones(32, np.float32)}
+    before = [w.copy() for w in agent.online.get_weights()]
+    agent.learn(batch, d)
+    assert any(not np.allclose(a, b) for a, b in zip(agent.online.get_weights(), before))

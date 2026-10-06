@@ -1,0 +1,8 @@
+# M4: m4_cross_base + the residual features of plan §7 Track A1 (return after
+# removing the first 3 principal components of the 26 training ETFs, estimated out
+# of sample; and its 30-day sum). One change only.
+inherit: config/experiments/m4_cross_base.yaml
+name: m4_cross_resid
+agent:
+  features: [log_ret, p_sma20, p_sma50, bb_pctb, rsi14, macd_hist, vol_rel20, atr14_p, sigma20,
+             vix_lag1, vix_chg_lag1, resid, resid_cum30]

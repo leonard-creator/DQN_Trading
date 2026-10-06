@@ -8,7 +8,11 @@ The research question: *does the agent beat simple baselines net of costs, over 
 
 ## Project status (2026-10-05)
 
-**M1 (harness + baselines) and M2 (model fixes on ^GDAXI) are done.** [`PROTOCOL.md`](PROTOCOL.md) v1.2 is approved and frozen. M2 result: training is stable, but no agent beats buy-and-hold net of costs, and the old (legacy) choices beat the Phase-2 fixes (see [`RESULTS.md`](RESULTS.md)). A secondary **neo-broker cost scenario** (EUR 1 per transaction) is implemented and evaluated: cheaper trades help a single ETF on EUR 10k slightly, but the agent gains no timing skill from them. Next: M3, reward variants, on the halved training budget (100k transitions).
+**M1–M4 are done.** [`PROTOCOL.md`](PROTOCOL.md) v1.2 is approved and frozen; 16 of 50 trials used; the test period is untouched.
+- **No agent beats buy-and-hold net of costs on any evaluation set.** Best on the 26-ETF H1 set: the cross-asset conv-transformer at a median Sharpe of 0.44 vs buy-and-hold's 0.67 (10 bp).
+- M4's go criterion is met: trained on 26 ETFs, the conv-transformer beats the single-asset agent on 7 never-seen ETFs (+0.27, p < 0.001). Its gain comes from trading less and being long more, not from timing skill.
+- Details: [`RESULTS.md`](RESULTS.md).
+- **Open decision before M5 (the one-time test):** run M5 now, or first pre-register the market-neutral hypothesis H2 (plan §7 Track B).
 
 | Document | What it is |
 |---|---|
@@ -131,6 +135,82 @@ These plots come from the original agent. They were made with one seed, no basel
 ## Change report
 
 Newest entry first. Each entry says what changed, why, and what was verified.
+
+### 2026-10-05 — Phase 4–5 / M4: cross-asset agent, new features, conv-transformer
+
+**Owner decisions:** go to M4 with `vol_scaled_pnl`; skip mean-variance tuning; build the conv-transformer while the first M4 runs train; 2-ETF deployment set (SPY + EFA) for the EUR 10k neo-broker case; no commit yet.
+
+**Added**
+- `rl/features_m4.py`: the spec Phase-4 features, fully causal, with no scaler fitting:
+  - log return, P/SMA20 − 1, P/SMA50 − 1, Bollinger %B, RSI(14), MACD histogram/P, log relative volume, ATR/P, 20-bar volatility;
+  - **VIX as-of with a one-bar lag** (`vix_lag1`, `vix_chg_lag1`);
+  - **residual features** (plan §7 A1): out-of-sample residual return vs the first 3 principal components of the 26 training ETFs (PCA on the 252 days before t, betas on the 60 days before t), plus its 30-day sum;
+  - trailing 252-bar z-score, clip ±5.
+  - Computed once per experiment and shared by all jobs.
+- `rl/networks.py`: `arch: conv_transformer` (plan §7 A2):
+  - 2 causal Conv1D layers (8 filters, kernel 2) with per-channel instance norm and a residual connection;
+  - learned position embedding;
+  - 4-head self-attention + feed-forward with residual LayerNorms;
+  - signal = last time step.
+  - Two corrections during the build: a per-time-step `LayerNormalization(axis=1)` was replaced by a true per-channel `InstanceNorm`, and a causal attention mask was dropped because it changes nothing for the last-step output. No look-ahead is guaranteed by the window itself, which ends at the decision bar.
+- `harness`:
+  - `extra_ticker_sets` in experiment configs (here `deploy2` = SPY + EFA), so `protocol.yaml` and its hashes stay unchanged;
+  - agent runs also load the context series (^VIX) and the factor-set tickers.
+- PROTOCOL §10a.10: the M4 evaluation sets; `deploy2` is secondary.
+- `config/experiments/m4_{cross_base,cross_resid,cross_resid_transformer,single_resid}.yaml` (trials 13–16), run from the detached `experiments/runs/m4_launcher.sh`.
+- `scripts/analyze_m4.py` → `experiments/reports/M4_cross_asset.md`:
+  - all evaluation sets;
+  - the go criterion as a paired permutation test;
+  - baselines on `deploy2` under neo-broker costs;
+  - permutation tests, deflated Sharpe, PBO;
+  - training stability.
+- Tests (91 pass):
+  - `tests/test_features_m4.py`: no look-ahead with every feature on, at once (future prices, volume and VIX perturbed); VIX strictly-before join; residuals remove the common factor and use no information from day t for their model; no NaN after warm-up on all 33 real tickers; end-to-end M4 training.
+  - `tests/test_rl.py`: the conv-transformer builds, trains, and its signal depends on the first and the last bar of the window.
+
+**Results** (`RESULTS.md` M4). Median Sharpe on the 26-ETF set at 10 bp:
+- conv 0.18 (no residuals), conv 0.16 (residuals), **conv-transformer 0.44**; buy-and-hold 0.67, MACD 0.44.
+- **Go criterion met** by the transformer on the 7 leave-out ETFs: 0.32 vs 0.00 for the single-asset agent (p < 0.001). The conv agents are not significant (p ≈ 0.08–0.10).
+- The transformer trades half as much (16 vs 31.5 turns/yr) and is invested 84 % of the time. At 0 bp it still trails buy-and-hold (0.58 vs 0.67), so the gain is less overtrading, not timing skill.
+- It beats momentum (Holm p = 0.011). Deflated Sharpe 0.69 < 0.95.
+- PBO over the 3 cross-asset configs: 0.00.
+- Residual features: no measurable effect.
+- Cross-asset training is more stable (late drift ≈ 0, best checkpoint at 37–47 % of training).
+
+### 2026-10-05 — Phase 3 / M3: reward designs implemented and compared on ^GDAXI
+
+**Owner decisions:** continue the plan on ^GDAXI (cheaper, cleaner comparison) with the reduced training budget (100k transitions), and implement the reward designs so they can be reused for later ideas.
+
+**Added** (all switched on per config, defaults unchanged, so earlier trials keep their hashes):
+- `rl/env.py` rewards, all on the same net return R the harness measures:
+  - `mean_variance`: x − (λ/2)x², with x = R / ex-ante daily vol (`mv_lambda`);
+  - `vol_scaled_pnl`: R / ex-ante daily vol;
+  - `active_return`: (R − buy-and-hold return) / ex-ante daily vol.
+- `rl/env.py` training-only shaping:
+  - `cost_penalty_mult`: shadow cost; trades look m× as expensive in the reward only;
+  - `holding_penalty`: `linear` k·h/252 or `exp` k·(e^{αh/252} − 1).
+- **Reward components logged** per step and per checkpoint (`rc_pnl`, `rc_cost`, `rc_shadow`, `rc_risk`, `rc_hold`, `reward_raw`), as the spec's Phase 3 requires.
+- `rl/features.py::ex_ante_vol`: EWMA (span 60) daily volatility known at each bar; `MarketData(sigmas=...)`.
+- `config/experiments/m3_{mean_variance,vol_scaled_pnl,active_return,diff_sharpe_shadow3}.yaml`, fixed before any M3 result (trials 9–12). They ran from the detached `experiments/runs/m3_launcher.sh`.
+- `scripts/analyze_m2.py`: reusable via `--milestone M3` / `--configs`, with a reward-components section. Fixed a Python 3.11 f-string error the first rerun had silently hidden; the regression check of the M2 report then showed only the expected differences (N_trials and the generic PBO label). The M2 report file was kept as its milestone snapshot (N_trials = 5).
+- `tests/test_rewards.py` (13 tests):
+  - each reward against a hand calculation;
+  - shadow cost and holding penalty change the reward but never the measured return;
+  - env = harness with shaping on;
+  - holding penalty forms;
+  - mean-variance risk term logged;
+  - bad configs fail loudly;
+  - no look-ahead in `ex_ante_vol`;
+  - end-to-end training with vol-scaled rewards.
+  - Total: **84 tests pass**.
+
+**Results** (`RESULTS.md` M3, `experiments/reports/M3_rewards.md`). Median Sharpe on ^GDAXI at 10 bp:
+- reference 0.17; `mean_variance` −0.01; `vol_scaled_pnl` **0.21**; `active_return` 0.13; shadow-cost ×3 0.17; buy-and-hold 0.39.
+- **Kill criterion not met.**
+- At 0 bp the reference and `vol_scaled_pnl` equal buy-and-hold (0.39), so the gap is cost drag.
+- PBO over the five M3 configs is 0.59: the ranking between rewards is not reliable.
+- λ = 0.5 in volatility units makes `mean_variance` stay mostly flat; λ ≈ 0.05 would balance the terms.
+- The shadow cost cuts turnover by 25 % and doubles holding time, without changing the Sharpe ratio.
 
 ### 2026-10-05 — Neo-broker cost scenario, M3 reference run, session hygiene
 

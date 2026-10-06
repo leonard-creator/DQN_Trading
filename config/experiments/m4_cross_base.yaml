@@ -1,0 +1,20 @@
+# M4 primary design without residuals: ONE agent trained on the 26 training ETFs
+# (random ticker + start per episode, spec Phase 5) with the spec Phase-4 feature
+# set (causal, trailing z-score) incl. VIX with a one-bar lag. Reward vol_scaled_pnl
+# (owner decision after M3), 100k transitions. Evaluated on the training universe
+# (H1 primary), the 7 never-seen leave-out ETFs, ^GDAXI and the 2-ETF neo-broker
+# deployment set (SPY + EFA, together ~ MSCI World; EUR 10k -> EUR 5k per position).
+inherit: config/experiments/m3_vol_scaled_pnl.yaml
+name: m4_cross_base
+eval_sets: [train, leave_out, single, deploy2]
+extra_ticker_sets:
+  deploy2: [SPY, EFA]
+agent:
+  train_tickers: train
+  feature_mode: m4
+  features: [log_ret, p_sma20, p_sma50, bb_pctb, rsi14, macd_hist, vol_rel20, atr14_p, sigma20,
+             vix_lag1, vix_chg_lag1]
+  m4: {factor_set: train, pca_k: 3, corr_window: 252, beta_window: 60, cum_window: 30,
+       z_window: 252, z_min_periods: 60, clip: 5.0}
+  env:
+    asset_sampling: uniform
