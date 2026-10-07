@@ -3,11 +3,17 @@
     python scripts/run_agent.py --config config/experiments/m2_dqn_base.yaml
     python scripts/run_agent.py --config config/legacy.yaml
     python scripts/run_agent.py --config config/experiments/m2_dqn_base.yaml --smoke
+    python scripts/run_agent.py --config config/v2/R0prime.yaml --synthetic    # v2 Step 0c
+    python scripts/run_agent.py --config config/v2/R0prime.yaml --calibrate    # its calibration rule
 
 --smoke is for mechanics and timing only: one seed, fold F1, a short training
 budget, no trial log, no wandb. It prints run time and the INNER-validation
 curve, and deliberately does not print outer-validation metrics, so smoke runs
 cannot feed into design decisions (they would be uncounted trials).
+
+--synthetic trains and scores the configuration on the three synthetic worlds of
+PROTOCOL Part II §V6.5 (harness/synthetic.py). Logged in experiments/synthetic.csv,
+never as a trial. --calibrate only checks the worlds' calibration rule (no training).
 """
 
 import argparse
@@ -17,7 +23,9 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from harness.config import load_config                  # noqa: E402
+import yaml                                             # noqa: E402
+
+from harness.config import deep_merge, load_config      # noqa: E402
 from harness.experiment import run_experiment           # noqa: E402
 from harness.splits import folds_from_config            # noqa: E402
 
@@ -29,15 +37,38 @@ def main():
     p.add_argument("--workers", type=int, help="override agent.runtime.workers")
     p.add_argument("--smoke", action="store_true", help="timing/mechanics check, nothing logged")
     p.add_argument("--smoke-transitions", type=int, default=20000)
+    p.add_argument("--set", nargs="*", default=[], metavar="KEY=VALUE",
+                   help="config overrides, e.g. agent.algo.loss=mse name=v2_V1_mse (YAML values; part of the hash)")
+    p.add_argument("--synthetic", action="store_true", help="v2 Step 0c on the synthetic worlds (no trial)")
+    p.add_argument("--worlds", nargs="*", help="--synthetic: subset of W-null W-vol W-regime")
+    p.add_argument("--calibrate", action="store_true", help="v2 Step 0c calibration rule only")
     args = p.parse_args()
+    sets = {}
+    for kv in args.set:                                  # a.b.c=value -> {"a": {"b": {"c": value}}}
+        key, value = kv.split("=", 1)
+        node = sets
+        *path, last = key.split(".")
+        for k in path:
+            node = node.setdefault(k, {})
+        node[last] = yaml.safe_load(value)
+    if args.synthetic or args.calibrate:
+        from harness import synthetic
+        cfg = load_config(args.config, sets)
+        if args.calibrate:
+            synthetic.calibrate(cfg)
+        else:
+            rows = synthetic.run(cfg, workers=args.workers, worlds=args.worlds or synthetic.WORLDS,
+                                 seeds=args.seeds if args.seeds else range(5))
+            print(rows.to_string(index=False))
+        return
 
-    over = {}
+    over = sets
     if args.workers:
-        over = {"agent": {"runtime": {"workers": args.workers}}}
+        over = deep_merge(over, {"agent": {"runtime": {"workers": args.workers}}})
     if args.smoke:
-        over = {"agent": {"train": {"transitions": args.smoke_transitions},
-                          "runtime": {"workers": 1, "force_subprocess": True}},
-                "logging": {"wandb": False}}
+        over = deep_merge(over, {"agent": {"train": {"transitions": args.smoke_transitions},
+                                           "runtime": {"workers": 1, "force_subprocess": True}},
+                                 "logging": {"wandb": False}})
     cfg = load_config(args.config, over)
     folds = folds_from_config(cfg)[:1] if args.smoke else None
     seeds = [0] if args.smoke else args.seeds

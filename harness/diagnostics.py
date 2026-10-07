@@ -21,7 +21,13 @@ something else. For a sleeve (one ticker) and one evaluation block:
 
 Portfolio level: sleeves are combined with fixed equal weights exactly as in
 harness.backtest.portfolio; the IC and switch statistics are averaged over sleeves.
+
+strategy_scores() adds the result-based diagnostics of one strategy (LC2, LC4, LC8
+with gate G-lag) and summarises everything above as one row (Step 0a, v2 reports).
 """
+
+import json
+import os
 
 import numpy as np
 import pandas as pd
@@ -29,7 +35,13 @@ from scipy import stats as _st
 
 from harness import backtest as bt
 from harness import metrics as mt
-from harness.splits import block_positions
+from harness.data import load_prices, ticker_sets
+from harness.config import repo_path
+from harness.experiment import run_experiment
+from harness.splits import block_positions, folds_from_config
+
+MDD_TOL = 0.001          # H3 preview: "lower drawdown" = lower by more than 0.1 pp (ties are not wins)
+G_LAG_TOL = 0.05         # gate G-lag, PROTOCOL Part II §V8
 
 
 def sleeve_timing(close, exposure, pos, sigma):
@@ -109,3 +121,85 @@ def learning_curve_stats(curve, info):
     slope = float(np.polyfit(late["p"], late["inner_sharpe"], 1)[0]) if len(late) >= 3 else np.nan
     return {"lc_auc": auc, "lc_last_half_slope": slope,
             "lc_best_at": info["best_update"] / max(1, info["updates"])}
+
+
+
+def med(x):
+    """Median ignoring NaN (NaN if nothing is finite)."""
+    x = np.asarray(x, dtype=float)
+    return float(np.nanmedian(x)) if np.isfinite(x).any() else np.nan
+
+
+def _by(res, es, cost, metric):
+    return res.runs(es, cost).set_index(["seed", "fold"])[metric]
+
+
+def _against_bh(series, bh_series):
+    """Pair (seed, fold) values with buy-and-hold by fold (B&H is the same for every seed)."""
+    bh = bh_series.groupby(level="fold").first()
+    return series - series.index.get_level_values("fold").map(bh).to_numpy()
+
+
+def strategy_scores(name, res, policy, es, bh, sigmas, primary):
+    """§V7 summary row of one strategy on evaluation set `es` (PROTOCOL Part II §V12.1).
+
+    res    : the strategy's logged ExperimentResult; policy : its exposures (stored or baseline)
+    bh     : buy-and-hold ExperimentResult; sigmas : {ticker: ex-ante vol}; primary : cost in bp
+    LC4 (timing = gross - B&H, cost = net - gross) and LC8 (lag-1 - lag-0) are differences of
+    the reported medians, so the table adds up and G-lag reads as worded in §V8; paired
+    medians are kept as *_paired. Returns (row, per-(seed, fold) diagnostics frame).
+    """
+    cfg = res.cfg
+    tickers = ticker_sets(cfg)[es]
+    rate = bt.cost_rate(primary, cfg["evaluation"]["costs"]["half_spread_bps"])
+    s0, s10, bh10 = _by(res, es, 0, "sharpe"), _by(res, es, primary, "sharpe"), _by(bh, es, primary, "sharpe")
+    c0, c10, bhc10 = _by(res, es, 0, "cagr"), _by(res, es, primary, "cagr"), _by(bh, es, primary, "cagr")
+    lag1 = run_experiment(cfg, policy=policy, eval_sets=[es], cost_levels=[0, primary], cost_scenarios=[],
+                          execution_lag=1, log=False, verbose=False)
+    l10 = _by(lag1, es, primary, "sharpe")
+    d = diagnose(policy, cfg, load_prices(tickers, cfg), folds_from_config(cfg), sorted(res.metrics["seed"].unique()),
+                 {es: tickers}, {t: sigmas[t] for t in tickers}, cost=rate)
+    row = {
+        "strategy": name, "eval_set": es,
+        "sharpe_10bp": med(s10), "sharpe_0bp": med(s0), "bh_sharpe": med(bh10),
+        "timing_vs_bh_sharpe": med(s0) - med(bh10), "cost_sharpe": med(s10) - med(s0),
+        "timing_vs_bh_pct": 100 * (med(c0) - med(bhc10)), "cost_pct": 100 * (med(c10) - med(c0)),
+        "timing_vs_bh_sharpe_paired": med(_against_bh(s0, bh10)), "cost_sharpe_paired": med(s10 - s0),
+        "sharpe_10bp_lag1": med(l10), "lag_delta": med(l10) - med(s10), "lag_delta_paired": med(l10 - s10),
+        "timing_ic": med(d["timing_ic"]), "timing_sharpe": med(d["timing_sharpe"]),
+        "mean_exposure": med(d["mean_exposure"]), "switches_per_100": med(d["switches_per_100"]),
+        "time_at_anchor": med(d["time_at_anchor"]),
+        "h3_share_mdd_below_matched": float(np.mean(d["mdd_agent"] < d["mdd_matched"] - MDD_TOL)),
+        "h3_dmdd_matched": med(d["mdd_agent"] - d["mdd_matched"]),
+        "h3_dmdd_volmatched": med(d["mdd_agent"] - d["mdd_volmatched"]),
+    }
+    row["g_lag_pass"] = bool(row["lag_delta"] >= -G_LAG_TOL)
+    return row, d
+
+
+def agent_scores(name, res, bh, sigmas, primary, es=None, workers=1, threads=2, q_values=True):
+    """strategy_scores() of an agent trial from its STORED exposures, plus LC1 (learning curves)
+    and, if q_values, LC5/LC7 and the reproduction check from its SAVED checkpoints
+    (rl/diagnostics.py, CPU only). Nothing is retrained. `es` defaults to the trial's
+    primary (first) evaluation set.
+    Returns (row, per-(seed, fold) frame, per-job learning-curve frame, per-sleeve Q frame or None).
+    """
+    from rl.policy import StoredExposurePolicy                 # late: rl imports the harness
+    run = repo_path(res.output_dir)
+    es = es or (res.cfg.get("eval_sets") or ["single"])[0]
+    row, d = strategy_scores(name, res, StoredExposurePolicy(run), es, bh, sigmas, primary)
+    jobs = os.path.join(run, "agent")
+    lc = pd.DataFrame([learning_curve_stats(pd.read_csv(os.path.join(jobs, j, "curve.csv")),
+                                            json.load(open(os.path.join(jobs, j, "info.json"))))
+                       for j in sorted(os.listdir(jobs))])
+    row.update({k: med(lc[k]) for k in lc.columns})
+    q = None
+    if q_values:
+        from rl.diagnostics import q_diagnostics_for_run
+        q = q_diagnostics_for_run(run, workers=workers, threads=threads)
+        q = q[q["ticker"].isin(ticker_sets(res.cfg)[es])]
+        row.update({"action_gap_ratio": med(q["action_gap_ratio"]), "q_minus_G": med(q["q_minus_G_median"]),
+                    "q_over_G": med(q["q_over_G"]), "q_bias_sd": med(q["q_bias_sd"]),
+                    "q_G_corr": med(q["q_G_corr"]), "reproduced": float(np.nanmean(q["reproduced"]))})
+    return row, d, lc, q
+

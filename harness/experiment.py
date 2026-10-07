@@ -114,7 +114,7 @@ def cost_label(cost):
 # ---------------------------------------------------------------------------
 def run_experiment(config, seeds=None, eval_sets=None, cost_levels=None, folds=None,
                    policy=None, unlock=None, log=True, notes="", out_root=None, verbose=True,
-                   cost_scenarios=None):
+                   cost_scenarios=None, execution_lag=0, prices=None):
     """Evaluate one configuration over seeds x folds x eval sets x cost levels.
 
     config      : path to an experiment YAML, or an already merged config dict
@@ -128,9 +128,14 @@ def run_experiment(config, seeds=None, eval_sets=None, cost_levels=None, folds=N
     policy      : policy object (default: built from the config)
     unlock      : test-period token (only scripts/final_test.py passes this)
     log         : append a row to experiments/trials.csv and write outputs
+    execution_lag : bars between decision and execution (harness.backtest);
+                  0 = v1 convention, 1 = realistic next-close execution
     cost_scenarios : names from config/cost_scenarios.yaml evaluated in addition
                   to the bp levels (default: config 'cost_scenarios' plus the
                   agent's training scenario, if any). Secondary results only.
+    prices      : {ticker: OHLCV frame} used instead of data/raw. ONLY for synthetic
+                  worlds (harness/synthetic.py); never combined with `unlock` or `log`,
+                  so injected data can neither reach the test period nor the trial log.
     """
     cfg = load_config(config) if isinstance(config, str) else config
     ev = cfg["evaluation"]
@@ -170,7 +175,12 @@ def run_experiment(config, seeds=None, eval_sets=None, cost_levels=None, folds=N
         fset = cfg["agent"].get("m4", {}).get("factor_set")
         if fset:
             load = sorted(set(load) | set(sets[fset]))
-    prices = load_prices(load, cfg, unlock=unlock)
+    if prices is None:
+        prices = load_prices(load, cfg, unlock=unlock)
+    elif unlock is not None or log:
+        raise ValueError("injected prices (synthetic worlds) cannot be logged as a trial or unlock the test")
+    else:
+        prices = {t: prices[t] for t in load}
 
     # The trial id and output folder exist before the policy runs, so a
     # learning policy can store its artifacts (curves, weights) next to the
@@ -207,7 +217,7 @@ def run_experiment(config, seeds=None, eval_sets=None, cost_levels=None, folds=N
                     pos = block_positions(df.index, fold.val_start, fold.val_end)
                     if len(pos) == 0:
                         return None
-                    res = bt.backtest(df["Close"].to_numpy(), expo[t], pos, cost)
+                    res = bt.backtest(df["Close"].to_numpy(), expo[t], pos, cost, lag=execution_lag)
                     return bt.to_frame(res, df.index[pos])
 
                 if isinstance(ck, str):

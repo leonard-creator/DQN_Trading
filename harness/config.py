@@ -56,7 +56,7 @@ def _load_with_inherit(path, depth=0):
     `inherit: config/experiments/m2_dqn_base.yaml` and then changes one flag,
     so it is obvious that exactly one thing differs.
     """
-    if depth > 5:
+    if depth > 10:                 # v2 configs sit 7 levels below m2_dqn_base
         raise RecursionError(f"inherit chain too deep at {path}")
     if not os.path.isabs(path):
         path = repo_path(path)

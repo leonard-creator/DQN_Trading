@@ -27,6 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from harness import trials as tr                                    # noqa: E402
 from harness.backtest import load_scenarios                         # noqa: E402
 from harness.config import repo_path                                # noqa: E402
+from harness.report import latest_dir                               # noqa: E402
 from harness.experiment import (BaselinePolicy, compare_to_baselines,      # noqa: E402
                                 deflated_sharpe_of, load_result, run_experiment)
 
@@ -34,12 +35,6 @@ AGENTS = ["legacy", "m2_dqn_base", "m2_dqn_dueling", "m2_dqn_nstep", "m2_dqn_per
           "m3_dqn_base_100k", "nb_dqn_base", "nb_dqn_k2"]
 TRAINED_NEO = {"nb_dqn_base", "nb_dqn_k2"}     # trained under neo-broker costs (marked †)
 BASES = ["baseline_buy_and_hold", "baseline_momentum", "baseline_macd", "baseline_random"]
-
-
-def latest_dir(name):
-    t = tr.load_trials()
-    rows = t[t["name"] == name]
-    return None if rows.empty else rows.iloc[-1]["output_dir"]
 
 
 def rescore(name, eval_sets):

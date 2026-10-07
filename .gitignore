@@ -20,3 +20,17 @@ experiments/runs/
 
 # --- Local wandb run folders (the runs themselves are synced online) -----------
 wandb/
+
+# --- Owner-run external downloads (scripts/download_external.py) --------------
+# Data files are re-creatable; each folder's MANIFEST.json (URL, sha256) IS committed.
+data/audit/**/*.csv
+data/longhistory/**/*.csv
+data/longhistory/**/*.CSV
+data/longhistory/**/*.zip
+data/external/**/*.csv
+
+# --- Console logs of report scripts (mostly TensorFlow noise; the reports themselves are committed)
+experiments/reports/*.log
+experiments/v2_queue.log
+experiments/v2_queue.pos
+experiments/v2_queue.lock

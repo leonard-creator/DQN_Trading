@@ -224,3 +224,35 @@ Trigger: after M3 or M4, if the development results show no configuration with a
 - **Known risk:** 26 broad ETFs carry little idiosyncratic risk, so residual mean-reversion may be too weak to survive 10 bp. A larger, survivorship-free universe of liquid ETFs would help, but needs a PROTOCOL change and new data.
 
 **Decision needed from the owner (no later than before M5):** pre-register H2 or not. Until then Track B is a plan only; no H2 code or trials will be run.
+
+---
+
+## 8. Addendum (2026-10-06): the v2 programme
+
+**Authoritative text:** `PROTOCOL.md` Part II (v2.0, approved by the owner on 2026-10-06, frozen before any v2 run). This section is only a summary.
+
+**Why v2.** After M1–M4 (16 trials) no agent beats buy-and-hold net of costs. Even before costs there is no timing skill: 0.58 vs 0.67 at 0 bp for the best agent. The losses come from trading that isn't worth its cost (16–31 turns/yr). The algorithm refinements (M2) and the reward shapes (M3) were not the lever. The encoder was (M4).
+
+**Core idea:** learn small, confident deviations from a strong default (buy-and-hold), using every market day for every possible decision.
+
+| Step | Content | New trials |
+|---|---|---|
+| 0a | Re-score existing trials: lag-1 execution, timing IC, attribution, learning-curve diagnostics; vol-target and 12-month momentum as descriptive baselines | 0 |
+| 0b | Data audit (`DATA_AUDIT.md`), incl. the fix of the **Q1 close-time leak** found in M4's ^GDAXI residual features | 0 |
+| 0c | Synthetic positive controls (W-null, W-vol, W-regime): "no signal" vs "cannot learn" | 0 |
+| 0d | Clean reference R0′ = R0 + Q1 fix + purge P = 40 | 1 |
+| 1 | V1: target-exposure U-head with a cost-structured no-trade band, exogenous replay, lazy buy-and-hold anchor | 1 |
+| 2 | V2: HL-Gauss loss, LayerNorm, bootstrapped heads with uncertainty gating | 1 |
+| 3 / 3w | V3 signal pack (cross-asset context, multi-horizon trend, BOCPD changepoints, auxiliary heads); weekly decisions | 2 |
+| 4 | Conditional: long-history pretraining (French industry portfolios 1926–2007) and/or stationary bootstrap | ≤ 2 |
+| Abl | Ablations of adopted bundles | ≤ 3 |
+
+The budget is ≤ 10 new trials (cumulative ≤ 26). Stopping rule: if no configuration beats buy-and-hold **gross** after Step 3, development stops and the test period is not spent.
+
+**Owner decisions (2026-10-06):**
+- no early stopping;
+- M6 (live forward test) deferred to future work;
+- **Track B (H2, §7.3) deferred to its own protocol, not dropped**;
+- the drawdown hypothesis is H3, tested against exposure-matched buy-and-hold;
+- no automatic network access or pushes (owner-run `scripts/download_external.py`; wandb online is the exception);
+- the Q2 data cross-check is kept.

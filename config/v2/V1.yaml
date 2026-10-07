@@ -1,0 +1,16 @@
+# PROTOCOL Part II, Step 1 (one YAML per v2 configuration, §V12 item 6):
+# V1 decision-structure bundle = R0' + the three components of §V6.1 (rl/exogenous.py):
+#   - target-exposure actions e' in {0, 1/4, ..., 1} with the exact cost-structured head
+#     Q(m, p, e') = U(m, e') - kappa |e' - p|, kappa = (c + s/2) / sigma; no position input
+#   - exogenous replay: every (ticker, training day) gives targets for all 5 exposures
+#     (no environment loop, so the epsilon-greedy setting has nothing to act on)
+#   - lazy buy-and-hold anchor: eta = 0.01 vol units per bar away from full exposure
+#     (training reward only); output biases start at each exposure's buy-and-hold value
+# Encoder, features, reward (vol_scaled_pnl), costs, purge and the number of gradient steps
+# (transitions x update_ratio, batch 256) are R0''s. Compared against R0' (§V5, §V8). +1 trial.
+inherit: config/v2/R0prime.yaml
+name: v2_V1
+agent:
+  replay: {mode: exogenous}
+  anchor_eta: 0.01
+  algo: {reward_norm: none}      # vol-scaled rewards are unit-scale; kappa must be in reward units

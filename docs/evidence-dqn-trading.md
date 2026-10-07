@@ -116,3 +116,76 @@
 - turnover levels;
 - results at ≥ 10 bp;
 - the online-first publication date (the owner described it as published last year; Crossref lists only the September 2026 issue).
+
+---
+
+## 2026-10-06 — How can the DQN agent beat buy-and-hold after the v1 results (M1–M4)?
+
+**Channel:** web search, plus abstract and landing pages fetched from PMLR, ICLR, AAAI, AAMAS, NBER, SSRN, Google Research, DeepAI, CDAR and pith.science.
+
+**Queries:** Exo-MDP hindsight learning; action augmentation in trading; value learning as classification (HL-Gauss); PQN and LayerNorm; volatility-managed portfolios and their critique; residual policy learning; lazy-MDPs; TempoRL; Gârleanu–Pedersen aim portfolio; time-series momentum; cross-asset signals; Deep Momentum Networks; Momentum Transformer; IQN; Averaged-DQN; Bootstrapped DQN; Munchausen RL; DQfD; iRDPG; SPR; BBF; primacy bias; Chronos; look-ahead bias in pretrained models; deep-learning statistical arbitrage; recent DQN-trading papers from 2024–2026.
+
+| Paper | Year | Type | Finding (one line) | Link |
+|---|---|---|---|---|
+| Huang, arXiv | 2018 | preprint | **Action augmentation**: rewards of unchosen actions are computable under zero market impact, so Q-values for all actions are updated at once. +6.4 %/yr on average vs ε-greedy on 12 FX pairs. | https://arxiv.org/abs/1807.02787 |
+| Sinclair et al., ICML (PMLR 202) | 2023 | primary | **Hindsight Learning** for MDPs with exogenous inputs: counterfactuals from logged exogenous data. Beats heuristics and standard RL in resource-allocation tasks. | https://proceedings.mlr.press/v202/sinclair23a.html |
+| Jacq, Ferret, Pietquin & Geist, AAMAS | 2022 | primary | **Lazy-MDPs**: the agent defers to a default policy and pays a penalty η for taking control. It learns *when* to act. | https://ifaamas.csc.liv.ac.uk/Proceedings/aamas2022/pdfs/p669.pdf |
+| Silver, Allen, Tenenbaum & Kaelbling, arXiv | 2018 | preprint | **Residual Policy Learning**: RL learns corrections to an existing controller and is much more data-efficient than learning from scratch. | https://arxiv.org/abs/1812.06298 |
+| Gârleanu & Pedersen, J. Finance 68(6) | 2013 | primary | With costs: "aim in front of the target" and "trade partially towards the current aim". | https://www.nber.org/papers/w15205 |
+| Biedenkapp et al., ICML | 2021 | primary | **TempoRL**: a skip-policy learns how long to repeat an action, up to an order of magnitude faster than vanilla Q-learning. | https://arxiv.org/abs/2106.05262 |
+| Farebrother et al., ICML (PMLR 235) | 2024 | primary | Value functions trained with **categorical cross-entropy** instead of MSE; mitigates noisy targets and non-stationarity. | https://proceedings.mlr.press/v235/farebrother24a.html |
+| Gallici et al., ICLR | 2025 | primary | **LayerNorm** gives provably convergent TD learning without a target network or replay buffer (PQN). | https://proceedings.iclr.cc/paper_files/paper/2025/hash/c23f3852601f6dd7f0b39223d031806f-Abstract-Conference.html |
+| Osband et al., NeurIPS | 2016 | primary | Bootstrapped DQN. Metadata only. | https://papers.nips.cc/paper/6501-deep-exploration-via-bootstrapped-dqn |
+| Anschel, Baram & Shimkin, ICML | 2017 | primary | Averaged-DQN for variance reduction. Metadata only; the abstract fetch was rate-limited (HTTP 429). | https://www.arxiv.org/abs/1611.01929 |
+| Vieillard, Pietquin & Geist, NeurIPS | 2020 | primary | **Munchausen RL**: a scaled log-policy added to the reward gives implicit KL regularisation and a larger action gap. | https://research.google/pubs/munchausen-reinforcement-learning/ |
+| Dabney et al., ICML (PMLR 80) | 2018 | primary | IQN: distributional DQN that enables a large class of risk-sensitive policies. | https://proceedings.mlr.press/v80/dabney18a.html |
+| Moreira & Muir, J. Finance 72(4) | 2017 | primary | Taking less risk when volatility is high raises factor and market Sharpe ratios (in-sample spanning). | https://www.nber.org/papers/22208 |
+| Cederburg, O'Doherty, Wang & Yan, JFE | 2020 | primary | Out of sample, vol management wins 53 vs 50 times across 103 strategies. Real-time combinations often underperform; the market factor's Sharpe goes from 0.46 to 0.42. | https://www.lehigh.edu/~xuy219/research/COWY.pdf |
+| Moskowitz, Ooi & Pedersen, SSRN / JFE | 2011/2012 | primary | Time-series momentum over 1–12 months in 58 futures, with partial reversal at longer horizons. | https://papers.ssrn.com/abstract=2089463 |
+| Pitkäjärvi, Suominen & Vaittinen, JFE 136(1) | 2020 | primary | Bond returns predict equities positively and equities predict bonds negatively. Sharpe 45 % above standard TSMOM. | https://tinbergen.nl/publication/168343/cross-asset-signals-and-time-series-momentum |
+| Lim, Zohren & Roberts, arXiv | 2019 | preprint | Deep Momentum Networks: Sharpe-optimised trend and position sizing with turnover regularisation; still outperform at 2–3 bp costs. | https://arxiv.org/pdf/1904.04912 |
+| Wood et al., arXiv | 2021 | preprint | Momentum Transformer: changepoint detection at multiple timescales complements attention. | https://deepai.org/publication/trading-with-the-momentum-transformer-an-intelligent-and-interpretable-architecture |
+| Guijarro-Ordonez, Pelger & Zanotti, working paper | 2021 | preprint | Signal extraction (CNN + Transformer) is the "most challenging and separating element"; a flexible allocation can't compensate for a weak signal. | https://cdar.berkeley.edu/sites/default/files/deep_learning_statistical_arbitrage.pdf |
+| Hester et al., AAAI | 2018 | primary | **DQfD**: TD updates plus supervised classification of demonstrator actions; better early learning on 41 of 42 Atari games. | https://ojs.aaai.org/index.php/AAAI/article/view/11757 |
+| Liu et al., AAAI | 2020 | primary | iRDPG: imitation of classical trading strategies inside DRL (POMDP formulation). | https://ojs.aaai.org/index.php/AAAI/article/view/5587 |
+| Schwarzer et al., ICLR | 2021 | primary | SPR: self-predictive representations for data-efficient RL. Metadata only. | https://mlanthology.org/iclr/2021/schwarzer2021iclr-dataefficient |
+| Schwarzer et al., ICML (PMLR 202) | 2023 | primary | BBF: scaled value networks for Atari 100K. | https://proceedings.mlr.press/v202/schwarzer23a.html |
+| Nikishin et al., ICML (PMLR 162) | 2022 | primary | Primacy bias and resets. Metadata only. | https://proceedings.mlr.press/v162/nikishin22a |
+| Ansari et al., TMLR | 2024 | primary | Chronos: pretrained on public datasets plus synthetic Gaussian-process data. | https://amazon.science/publications/chronos-learning-the-language-of-time-series |
+| Zhang, Huang, Chen, Chen & Chen, arXiv 2609.20554 | 2026 | preprint | Look-ahead bias in pretrained financial forecasters: later-trained models were *worse* than point-in-time ones in 18 of 20 US model-horizon cases. Exposure to future data is still an information-set violation. | https://pith.science/paper/2609.20554 |
+
+**Conclusion:**
+- Methods that fit the v1 diagnosis (no gross timing skill, cost-driven losses, seed noise as large as the effects) and stay inside DQN:
+  1. exogenous / counterfactual replay with a cost-structured value head, which yields a no-trade band;
+  2. default-anchored ("lazy" / residual) action spaces;
+  3. ensemble-gated switching;
+  4. noise-robust value losses (cross-entropy, LayerNorm);
+  5. slower cross-asset inputs (bond↔equity momentum, multi-horizon trend, changepoints).
+- The literature supports each mechanism, but **none has been shown to beat buy-and-hold on diversified ETFs under a multi-seed, multiplicity-aware protocol.** The recent DQN-trading papers I found (2024–2026) report mostly single-split results.
+
+**Open questions:**
+- Does vol-timing survive costs and real-time estimation on these 26 ETFs? (Cederburg et al. suggest probably only weakly.)
+- Is there any learnable daily or weekly timing signal at all? The synthetic positive controls in NEW_PROTOCOL §4.1 are designed to answer this.
+
+**Not found / could not verify:**
+- Averaged-DQN abstract (rate-limited).
+- A ResearchGate page on time-series foundation models in finance (HTTP 429).
+- The HL-Gauss specifics are not in the Farebrother et al. abstract; only categorical cross-entropy is confirmed.
+- The exact input set of Deep Momentum Networks was not verified.
+
+**Further references cited in `PROTOCOL.md` Part II §V13** (added by the owner; listed here so that every citation in the protocol has an entry):
+
+| Source | Year | Type | Used for | Link |
+|---|---|---|---|---|
+| Bailey, Borwein, López de Prado & Zhu, Notices of the AMS | 2014 | primary | Minimum backtest length (MinBTL), §V2.2 | https://carmamaths.org/jon/backtest.pdf |
+| Lo, Financial Analysts Journal | 2002 | primary | The statistics of Sharpe ratios; serial correlation, §V2.2 | https://rpc.cfainstitute.org/research/financial-analysts-journal/2002/the-statistics-of-sharpe-ratios |
+| Israel, Kelly & Moskowitz, JOIM | 2020 | primary | Can machines "learn" finance? Small-data limits | https://papers.ssrn.com/abstract=3624052 |
+| Kenneth French Data Library | – | data | Daily industry portfolios from 1926-07-01, Step 4 | https://mba.tuck.dartmouth.edu/pages/faculty/Ken.French/Data_Library/det_5_ind_port.html |
+| FRED, series BAA10Y | – | data | Optional credit-spread input, daily from 1986-01-02 | https://fred.stlouisfed.org/series/BAA10Y |
+| Adams & MacKay | 2007 | preprint | Bayesian online changepoint detection, §V6.3 | https://lips.cs.princeton.edu/bibliography/adams2007changepoint |
+| Hamilton, Econometrica 57(2):357–384 | 1989 | primary | Regime switching, synthetic world W-regime, §V6.5 | https://ideas.repec.org/a/ecm/emetrp/v57y1989i2p357-84.html |
+| Wood, Roberts & Zohren | 2021 | preprint | Slow momentum with fast reversion (online CPD module) | https://ideas.repec.org/p/arx/papers/2105.13727.html |
+| Alpaca documentation | – | vendor docs | Paper trading (M6, deferred) | https://docs.alpaca.markets/docs/paper-trading |
+| European Parliament question E-004745/2021 | 2021 | official | US-domiciled ETFs and PRIIPs for EU retail investors (M6, deferred) | https://www.europarl.europa.eu/doceo/document/E-9-2021-004745_EN.html |
+
+*Provenance note (2026-10-06):* this entry and the table above were researched and verified by the project owner (source file `_templates/Evidence_for_research.md`) and copied here unchanged, without re-verification, at the owner's instruction.

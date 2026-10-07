@@ -122,24 +122,21 @@ def _wandb_logger(cfg, job_name, out_dir):
         return None, None
 
 
-def run_job(job):
-    """Train one agent and produce exposures for all its evaluation blocks.
+def build_job_data(job):
+    """Everything a (seed, training cut) job needs except the network.
 
-    `job` is a plain dict (picklable): cfg, seed, folds (sharing one cut),
-    prices {ticker: DataFrame}, train_tickers, eval_tickers, out_dir.
+    Used by run_job (training) AND by rl/diagnostics.py (re-inference from
+    saved weights), so diagnostics always see exactly the features, ranges
+    and costs the agent was trained and evaluated with.
+    Returns a dict: W, P, inner, tickers (training tickers first), train_t,
+    eval_t, closes, feats, vols, dates, sigmas, fr (FoldRanges per ticker),
+    cost_of(ticker, n_positions), K, short.
     """
-    from rl.env import MarketData
     from rl.features import ex_ante_vol, ticker_features, vol_scale
-    from rl.trainer import greedy_exposures, train_run
     from harness import backtest as bt
 
-    cfg, seed, folds = job["cfg"], job["seed"], job["folds"]
+    cfg, folds = job["cfg"], job["folds"]
     a, ev = cfg["agent"], cfg["evaluation"]
-    _seed_everything(seed)
-    name = f"{'+'.join(f.name for f in folds)}_s{seed}"
-    job_dir = os.path.join(job["out_dir"], "agent", name)
-    os.makedirs(job_dir, exist_ok=True)
-
     W = int(a["window"])
     P = max(purge_bars(cfg), W + int(a["algo"].get("n_step", 1)))
     inner = int(cfg["splits"]["inner_val_bars"])
@@ -165,12 +162,6 @@ def run_job(job):
         sigmas.append(ex_ante_vol(df["Close"].to_numpy(), vol_span, r.train_start_pos, r.inner_train_end_pos))
         dates.append(df.index)
 
-    # decisions t in [lo, hi): the last one reads close[hi], which stays inside its range
-    train_ranges = [(max(fr[t].train_start_pos, W - 1), fr[t].inner_train_end_pos - 1) for t in train_t]
-    select_ranges = [(fr[t].inner_val_start_pos - 1, fr[t].train_end_pos - 1) for t in train_t]
-    train_data = MarketData(train_t, closes[:len(train_t)], feats[:len(train_t)], W,
-                            vols[:len(train_t)], dates[:len(train_t)], sigmas[:len(train_t)])
-
     # Costs the agent trains under: the PROTOCOL level, or a named scenario
     # (e.g. neo_broker: EUR 1 per transaction, spread, TER). With a scenario, the
     # capital is shared by all training tickers, so each sleeve holds C / N.
@@ -182,32 +173,82 @@ def run_job(job):
     else:
         rate = bt.cost_rate(ev["costs"]["primary_bps"], ev["costs"]["half_spread_bps"])
         cost_of = lambda t, n: rate                                       # noqa: E731
+    K, short = a["env"].get("levels", ev["position_levels"]), ev["allow_short"]
+    return {"W": W, "P": P, "inner": inner, "tickers": tickers, "train_t": train_t, "eval_t": eval_t,
+            "closes": closes, "feats": feats, "vols": vols, "dates": dates, "sigmas": sigmas, "fr": fr,
+            "cost_of": cost_of, "K": K, "short": short}
+
+
+def eval_market(jd, eval_t):
+    """MarketData for the evaluation tickers of a job (built from build_job_data's output)."""
+    from rl.env import MarketData
+    idx = [jd["tickers"].index(t) for t in eval_t]
+    return MarketData([jd["tickers"][i] for i in idx], [jd["closes"][i] for i in idx],
+                      [jd["feats"][i] for i in idx], jd["W"], [jd["vols"][i] for i in idx],
+                      [jd["dates"][i] for i in idx], [jd["sigmas"][i] for i in idx])
+
+
+def eval_ranges(job, jd, fold, eval_t):
+    """(lo, hi) decision ranges of one evaluation block for each evaluation ticker."""
+    out = []
+    for t in eval_t:
+        val = fold_ranges(job["prices"][t].index, fold, jd["P"], jd["inner"]).val
+        out.append((int(val[0]) - 1, int(val[-1])))
+    return out
+
+
+def run_job(job):
+    """Train one agent and produce exposures for all its evaluation blocks.
+
+    `job` is a plain dict (picklable): cfg, seed, folds (sharing one cut),
+    prices {ticker: DataFrame}, train_tickers, eval_tickers, out_dir.
+    """
+    from rl.env import MarketData
+    from rl.trainer import greedy_exposures, train_run
+
+    cfg, seed, folds = job["cfg"], job["seed"], job["folds"]
+    a = cfg["agent"]
+    exogenous = a.get("replay", {}).get("mode", "agent") == "exogenous"     # V1 (rl/exogenous.py)
+    if exogenous:
+        from rl.exogenous import band_exposures, train_exogenous
+    _seed_everything(seed)
+    name = f"{'+'.join(f.name for f in folds)}_s{seed}"
+    job_dir = os.path.join(job["out_dir"], "agent", name)
+    os.makedirs(job_dir, exist_ok=True)
+
+    jd = build_job_data(job)
+    W, P, fr, train_t, eval_t = jd["W"], jd["P"], jd["fr"], jd["train_t"], jd["eval_t"]
+    closes, feats, vols, dates, sigmas = jd["closes"], jd["feats"], jd["vols"], jd["dates"], jd["sigmas"]
+    cost_of = jd["cost_of"]
+
+    # decisions t in [lo, hi): the last one reads close[hi], which stays inside its range
+    train_ranges = [(max(fr[t].train_start_pos, W - 1), fr[t].inner_train_end_pos - 1) for t in train_t]
+    select_ranges = [(fr[t].inner_val_start_pos - 1, fr[t].train_end_pos - 1) for t in train_t]
+    train_data = MarketData(train_t, closes[:len(train_t)], feats[:len(train_t)], W,
+                            vols[:len(train_t)], dates[:len(train_t)], sigmas[:len(train_t)])
     train_costs = [cost_of(t, len(train_t)) for t in train_t]
 
     logger, wb = _wandb_logger(cfg, name, job_dir)
-    agent, info, curve, last_w = train_run(cfg, train_data, train_ranges, select_ranges, seed,
-                                           train_costs, logger)
+    agent, info, curve, last_w = (train_exogenous if exogenous else train_run)(
+        cfg, train_data, train_ranges, select_ranges, seed, train_costs, logger)
     curve.to_csv(os.path.join(job_dir, "curve.csv"), index=False)
     agent.online.save_weights(os.path.join(job_dir, "best.weights.h5"))
 
     # greedy exposures on every evaluation block, for the selected AND the last weights
-    K, short = a["env"].get("levels", ev["position_levels"]), ev["allow_short"]
+    K, short = jd["K"], jd["short"]
     result = {}
+    sub = eval_market(jd, eval_t)
     for tag, weights in (("selected", None), ("last", last_w)):
         if weights is not None:
             agent.online.set_weights(weights)
             agent.online.save_weights(os.path.join(job_dir, "last.weights.h5"))
         for f in folds:
-            idx = [tickers.index(t) for t in eval_t]
-            ranges = []
-            for t in eval_t:
-                val = fold_ranges(job["prices"][t].index, f, P, inner).val
-                ranges.append((int(val[0]) - 1, int(val[-1])))
-            sub = MarketData([tickers[i] for i in idx], [closes[i] for i in idx], [feats[i] for i in idx],
-                             W, [vols[i] for i in idx], [dates[i] for i in idx], [sigmas[i] for i in idx])
-            # costs do not influence greedy actions; passed only because the env needs them
-            flat = greedy_exposures(agent, sub, ranges, a["env"], K, short,
-                                    [cost_of(t, len(eval_t)) for t in eval_t])
+            ranges = eval_ranges(job, jd, f, eval_t)
+            costs = [cost_of(t, len(eval_t)) for t in eval_t]
+            # env agent: costs do not influence greedy actions (the env needs them anyway);
+            # V1: they set the no-trade band of the cost-structured head
+            flat = (band_exposures(agent, sub, ranges, costs, float(a.get("gate_z", 0.0))) if exogenous
+                    else greedy_exposures(agent, sub, ranges, a["env"], K, short, costs))
             for j, t in enumerate(eval_t):
                 result[f"{tag}|{f.name}|{t}"] = flat[sub.offsets[j]:sub.offsets[j] + sub.lengths[j]]
     np.savez_compressed(os.path.join(job_dir, "exposures.npz"), **result)
@@ -218,6 +259,73 @@ def run_job(job):
         wb.summary.update({k: v for k, v in info.items() if isinstance(v, (int, float))})
         wb.finish()
     return {"seed": seed, "folds": [f.name for f in folds], "dir": job_dir, "info": info}
+
+
+def experiment_features(cfg, prices, tickers):
+    """M4 feature matrices for every ticker a job needs (None for legacy features).
+
+    Computed ONCE per experiment: the M4 features are causal and fold-independent.
+    """
+    a = cfg["agent"]
+    if a.get("feature_mode", "legacy") != "m4":
+        return None
+    from rl.features_m4 import build_m4_features
+    sets = ticker_sets(cfg)
+    m4 = a.get("m4", {})
+    need = sorted(set(sets[a["train_tickers"]]) | set(tickers))
+    print(f"  [dqn] building M4 features for {len(need)} tickers (factor set '{m4.get('factor_set', 'train')}')")
+    return build_m4_features(prices, need, a["features"], sets[m4.get("factor_set", "train")],
+                             vix=prices.get("^VIX"), params=m4)
+
+
+def make_jobs(cfg, prices, folds, seeds, tickers, out_dir, features="build"):
+    """One job dict per (seed, training cut); used for training and for diagnostics."""
+    a = cfg["agent"]
+    train_t = ticker_sets(cfg)[a["train_tickers"]]
+    if isinstance(features, str):
+        features = experiment_features(cfg, prices, tickers)
+    groups = {}
+    for f in folds:
+        groups.setdefault(f.cut, []).append(f)
+    jobs = []
+    for seed in seeds:
+        for group in groups.values():
+            end = max(f.val_end for f in group)
+            need = sorted(set(train_t) | set(tickers))
+            jobs.append({"cfg": cfg, "seed": int(seed), "folds": group,
+                         "prices": {t: prices[t][prices[t].index <= end] for t in need},
+                         "train_tickers": train_t, "eval_tickers": list(tickers),
+                         "out_dir": out_dir,
+                         "features": None if features is None else
+                         {t: features[t][:int((prices[t].index <= end).sum())] for t in need}})
+    return jobs
+
+
+def train_jobs(jobs, runtime):
+    """Train jobs from make_jobs() in parallel worker processes; returns their result dicts.
+
+    One worker per GPU slot (plan_workers, 90 % CPU cap); in-process if only one
+    worker is planned (tests, debugging). Shared by DQNPolicy.prepare and the
+    synthetic worlds (harness/synthetic.py), which train jobs with different data.
+    """
+    n, gpus, threads = plan_workers(runtime, len(jobs))
+    deterministic = bool(runtime.get("deterministic_ops", True))
+    print(f"  [dqn] {len(jobs)} training jobs on {n} worker(s), GPUs {gpus or 'none (CPU)'}, "
+          f"{threads} threads each")
+    if n == 1 and not runtime.get("force_subprocess", False):
+        _configure_tf(threads, deterministic)          # in-process (tests, debugging)
+        return [run_job(j) for j in jobs]
+    ctx = mp.get_context("spawn")
+    counter = ctx.Value("i", 0)
+    results = []
+    with ctx.Pool(n, initializer=_init_worker, initargs=(counter, gpus, threads, deterministic)) as pool:
+        for r in pool.imap_unordered(run_job, jobs, chunksize=1):
+            results.append(r)
+            i = r["info"]
+            print(f"  [dqn] done {len(results)}/{len(jobs)}: {'+'.join(r['folds'])} seed {r['seed']} "
+                  f"| best inner Sharpe {i['best_inner_sharpe']:+.2f} @ upd {i['best_update']} "
+                  f"| last {i['last_inner_sharpe']:+.2f} | {i['seconds']:.0f}s")
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -232,53 +340,9 @@ class DQNPolicy:
         self.jobs_done = []
 
     def prepare(self, prices, folds, seeds, cfg, tickers, out_dir):
-        a = cfg["agent"]
-        sets = ticker_sets(cfg)
-        train_t = sets[a["train_tickers"]]
-        features = None
-        if a.get("feature_mode", "legacy") == "m4":
-            from rl.features_m4 import build_m4_features
-            m4 = a.get("m4", {})
-            need = sorted(set(train_t) | set(tickers))
-            print(f"  [dqn] building M4 features for {len(need)} tickers (factor set '{m4.get('factor_set', 'train')}')")
-            features = build_m4_features(prices, need, a["features"], sets[m4.get("factor_set", "train")],
-                                         vix=prices.get("^VIX"), params=m4)
-        groups = {}
-        for f in folds:
-            groups.setdefault(f.cut, []).append(f)
-        jobs = []
-        for seed in seeds:
-            for group in groups.values():
-                end = max(f.val_end for f in group)
-                need = sorted(set(train_t) | set(tickers))
-                jobs.append({"cfg": cfg, "seed": int(seed), "folds": group,
-                             "prices": {t: prices[t][prices[t].index <= end] for t in need},
-                             "train_tickers": train_t, "eval_tickers": list(tickers),
-                             "out_dir": out_dir,
-                             "features": None if features is None else
-                             {t: features[t][:int((prices[t].index <= end).sum())] for t in need}})
-
-        rt = a.get("runtime", {})
-        n, gpus, threads = plan_workers(rt, len(jobs))
-        deterministic = bool(rt.get("deterministic_ops", True))
-        print(f"  [dqn] {len(jobs)} training jobs on {n} worker(s), GPUs {gpus or 'none (CPU)'}, "
-              f"{threads} threads each")
-        if n == 1 and not rt.get("force_subprocess", False):
-            _configure_tf(threads, deterministic)          # in-process (tests, debugging)
-            results = [run_job(j) for j in jobs]
-        else:
-            ctx = mp.get_context("spawn")
-            counter = ctx.Value("i", 0)
-            with ctx.Pool(n, initializer=_init_worker, initargs=(counter, gpus, threads, deterministic)) as pool:
-                results = []
-                for r in pool.imap_unordered(run_job, jobs, chunksize=1):
-                    results.append(r)
-                    i = r["info"]
-                    print(f"  [dqn] done {len(results)}/{len(jobs)}: {'+'.join(r['folds'])} seed {r['seed']} "
-                          f"| best inner Sharpe {i['best_inner_sharpe']:+.2f} @ upd {i['best_update']} "
-                          f"| last {i['last_inner_sharpe']:+.2f} | {i['seconds']:.0f}s")
-        self.jobs_done = results
-        self.exp = load_exposures([r["dir"] for r in results])
+        self.jobs_done = train_jobs(make_jobs(cfg, prices, folds, seeds, tickers, out_dir),
+                                    cfg["agent"].get("runtime", {}))
+        self.exp = load_exposures([r["dir"] for r in self.jobs_done])
 
     def exposures(self, prices, fold, seed, cfg, tickers):
         got = self.exp[(fold.name, seed)]

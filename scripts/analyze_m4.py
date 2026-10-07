@@ -16,120 +16,20 @@ and the logged baselines. Sections:
   6. training stability (from the training curves)
 """
 
-import json
 import os
 import shutil
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import numpy as np                                                       # noqa: E402
-import pandas as pd                                                      # noqa: E402
-
-from harness import metrics as mt                                        # noqa: E402
-from harness import stats as st                                          # noqa: E402
 from harness import trials as tr                                         # noqa: E402
-from harness.config import deep_merge, repo_path                         # noqa: E402
-from harness.experiment import (BaselinePolicy, compare_to_baselines,    # noqa: E402
-                                deflated_sharpe_of, load_result, pbo_over, run_experiment)
+from harness.config import repo_path                                     # noqa: E402
+from harness.experiment import compare_to_baselines, deflated_sharpe_of, pbo_over  # noqa: E402
+from harness.report import (BASES, cost_table, deploy_baselines, fold_table,  # noqa: E402
+                            latest, paired, perf_table, stability_rows)
 
 CROSS = ["m4_cross_base", "m4_cross_resid", "m4_cross_resid_transformer"]
 SINGLE = "m4_single_resid"
-BASES = {"buy_and_hold": "baseline_buy_and_hold", "momentum": "baseline_momentum",
-         "macd": "baseline_macd", "random": "baseline_random"}
-PCT = {"cagr", "max_drawdown", "exposure", "hit_rate"}
-COLS = [("sharpe", "Sharpe"), ("cagr", "CAGR"), ("max_drawdown", "MaxDD"), ("turnover", "Turnover/yr"),
-        ("exposure", "Exposure"), ("avg_holding", "Hold (bars)")]
-
-
-def latest(name):
-    t = tr.load_trials()
-    rows = t[t["name"] == name]
-    if rows.empty:
-        print(f"[analyze_m4] {name} not logged yet; skipped")
-        return None
-    return load_result(rows.iloc[-1]["output_dir"])
-
-
-def cell(v, iqr, pct):
-    if not np.isfinite(v):
-        return "n/a"
-    f = (lambda x: f"{100 * x:.1f}%") if pct else (lambda x: f"{x:.2f}")
-    return f"{f(v)} ({f(iqr)})"
-
-
-def perf_table(results, es, cost):
-    L = ["| Strategy | " + " | ".join(c[1] for c in COLS) + " |", "|---" * (len(COLS) + 1) + "|"]
-    for name, res in results.items():
-        runs = res.runs(es, cost)
-        if runs.empty:
-            continue
-        a = mt.aggregate(runs)
-        L.append(f"| {name} | " + " | ".join(cell(a[f'{k}_median'], a[f'{k}_iqr'], k in PCT) for k, _ in COLS) + " |")
-    return "\n".join(L)
-
-
-def fold_table(results, es, cost):
-    folds = None
-    L = []
-    for name, res in results.items():
-        runs = res.runs(es, cost)
-        if runs.empty:
-            continue
-        med = runs.groupby("fold")["sharpe"].median()
-        if folds is None:
-            folds = list(med.index)
-            L = ["| Strategy | " + " | ".join(folds) + " |", "|---" * (len(folds) + 1) + "|"]
-        L.append(f"| {name} | " + " | ".join(f"{med[f]:.2f}" for f in folds) + " |")
-    return "\n".join(L)
-
-
-def cost_table(results, es, levels):
-    L = ["| Strategy | " + " | ".join(f"{c} bp" if not isinstance(c, str) else c for c in levels) + " |",
-         "|---" * (len(levels) + 1) + "|"]
-    for name, res in results.items():
-        cells = []
-        for c in levels:
-            r = res.runs(es, c)
-            cells.append(f"{r['sharpe'].median():.2f}" if not r.empty else "n/a")
-        L.append(f"| {name} | " + " | ".join(cells) + " |")
-    return "\n".join(L)
-
-
-def paired(a, b, es, cost, metric="sharpe", n_perm=10000):
-    """Permutation test of a > b on (seed, fold) pairs (both agents use seeds 0-9)."""
-    m = a.runs(es, cost)[["seed", "fold", metric]].merge(
-        b.runs(es, cost)[["seed", "fold", metric]], on=["seed", "fold"], suffixes=("_a", "_b"))
-    return st.permutation_test(m[f"{metric}_a"] - m[f"{metric}_b"], n_perm)
-
-
-def deploy_baselines(cfg_like):
-    """Baselines on the deployment set (not in their logged runs), incl. the neo-broker scenario."""
-    out = {}
-    for k, name in BASES.items():
-        res = latest(name)
-        if res is None:
-            continue
-        cfg = deep_merge(res.cfg, {"extra_ticker_sets": cfg_like["extra_ticker_sets"]})
-        out[f"*{k}*"] = run_experiment(cfg, policy=BaselinePolicy(cfg["policy"], cfg.get("policy_params")),
-                                       eval_sets=["deploy2"], cost_scenarios=["neo_broker"],
-                                       log=False, verbose=False)
-    return out
-
-
-def stability_rows(res):
-    rows = []
-    base = os.path.join(res.output_dir, "agent")
-    for d in sorted(os.listdir(base)):
-        info = json.load(open(os.path.join(base, d, "info.json")))
-        c = pd.read_csv(os.path.join(base, d, "curve.csv"))
-        c["p"] = c["update"] / max(1, info["updates"])
-        mid = c.loc[(c.p > 0.25) & (c.p <= 0.5), "inner_sharpe"].mean()
-        late = c.loc[c.p > 0.75, "inner_sharpe"].mean()
-        rows.append({"best_at": info["best_update"] / max(1, info["updates"]), "drift": late - mid,
-                     "q_min": c["mean_q"].min(), "q_max": c["mean_q"].max(),
-                     "secs": info.get("seconds", np.nan)})
-    return pd.DataFrame(rows)
 
 
 def main():

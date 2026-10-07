@@ -6,18 +6,27 @@ The research question: *does the agent beat simple baselines net of costs, over 
 
 > Research code only. No live trading, not investment advice.
 
-## Project status (2026-10-05)
+## Project status (2026-10-06)
 
-**M1–M4 are done.** [`PROTOCOL.md`](PROTOCOL.md) v1.2 is approved and frozen; 16 of 50 trials used; the test period is untouched.
-- **No agent beats buy-and-hold net of costs on any evaluation set.** Best on the 26-ETF H1 set: the cross-asset conv-transformer at a median Sharpe of 0.44 vs buy-and-hold's 0.67 (10 bp).
-- M4's go criterion is met: trained on 26 ETFs, the conv-transformer beats the single-asset agent on 7 never-seen ETFs (+0.27, p < 0.001). Its gain comes from trading less and being long more, not from timing skill.
-- Details: [`RESULTS.md`](RESULTS.md).
-- **Open decision before M5 (the one-time test):** run M5 now, or first pre-register the market-neutral hypothesis H2 (plan §7 Track B).
+**M1–M4 are done; the v2 programme is approved and frozen** ([`PROTOCOL.md`](PROTOCOL.md) Part II). 16 of 50 trials are used; the test period is untouched.
+- **v1 result:** no agent beats buy-and-hold net of costs. Best on the 26-ETF H1 set: the conv-transformer at a median Sharpe of 0.44 vs 0.67. There is no timing skill even before costs.
+- **v2 idea:** learn small, confident deviations from buy-and-hold, with costs built into the decision (a no-trade band), using every market day for every possible exposure. At most 10 new trials, with a stopping rule that protects the test period.
+- **v2 Steps 0a + 0b done (2026-10-06):**
+  - Re-scoring confirms that no trial has timing skill; all agents survive a one-day execution delay.
+  - The value estimates are noise-dominated: action gaps are smaller than the TD noise.
+  - The data is clean apart from the ^GDAXI close-time leak, which is now fixed (pipeline v2) and which the v1 agents never exploited.
+- **v2 Step 0d done (2026-10-07):** the clean reference R0′ scores 0.43, against 0.44 for R0, so the Q1 fix changes nothing.
+- **v2 Step 0c done (2026-10-07):**
+  - R0′ fails all three synthetic worlds. V1 stops the overtrading but does not time, so **stopping rule 1 paused real-data trials**.
+  - The synthetic iteration found **V1b** = V1 + MSE + 20-step targets + 10 gated heads. It passes W-null and W-regime on the pre-registered seeds (+0.26 Sharpe, 72 % of the oracle). On 5 new seeds it gains only +0.05; pooled over 10 seeds it gains +0.06 (16 %), so it is safe but weak.
+- **Next (owner decision):** run V1b on real data as Step 1 (`config/v2/V1b.yaml`, +1 trial), or first strengthen it on synthetic data (more regime events: Step 4 long history; larger ensembles). The queue is idle; all results are in `experiments/reports/V2_0c.md`.
+- Details: [`RESULTS.md`](RESULTS.md), plan summary in [`docs/03_extracted_plan.md`](docs/03_extracted_plan.md) §8.
 
 | Document | What it is |
 |---|---|
 | [`PROTOCOL.md`](PROTOCOL.md) | Pre-registration (approved): hypothesis H1, universe, splits, trial budget, costs, statistics |
-| [`RESULTS.md`](RESULTS.md) | Results per milestone; currently the M1 baselines |
+| [`RESULTS.md`](RESULTS.md) | Results per milestone (M1–M4) and per v2 step |
+| [`DATA_AUDIT.md`](DATA_AUDIT.md) | v2 Step 0b data audit: effective sample size, drawdown events, luck level, data-quality checks Q1–Q6 |
 | [`docs/03_extracted_plan.md`](docs/03_extracted_plan.md) | The authoritative plan: weaknesses W1–W15, evaluation protocol, phases A–F |
 | [`docs/02_claude_code_prompt.md`](docs/02_claude_code_prompt.md) | Engineering brief derived from the plan (milestones M1–M5, definition of done) |
 | [`docs/evidence-dqn-trading.md`](docs/evidence-dqn-trading.md) | Literature log behind each design choice |
@@ -135,6 +144,149 @@ These plots come from the original agent. They were made with one seed, no basel
 ## Change report
 
 Newest entry first. Each entry says what changed, why, and what was verified.
+
+### 2026-10-07 — v2 Step 0d (R0′), Step 0c and V1 implemented, detached queue, shared report code
+
+**Owner instructions (2026-10-07):**
+- no optional connectors;
+- always look for ways to improve the agent (profit in the later live test is the goal);
+- reuse the harness and scripts, with fewer single-use files and short, safe, commented code;
+- GPU training runs detached from the session.
+
+**Results:**
+- Step 0d: R0′ = 0.43 vs R0 0.44 on the 26 ETFs (paired Δ −0.00, p = 0.33). It is trial 17 (`experiments/reports/V2_0d.md`).
+- Calibration of the synthetic worlds: the W-vol oracle gained only +0.08 Sharpe with GARCH β = 0.90. The rule needs ≥ 0.15, so β was raised to 0.91 (+0.19). W-regime passes with the specified parameters (+0.36).
+
+**Added**
+- `scripts/run_queue.sh` + `experiments/v2_queue.txt`: a detached job queue.
+  - It runs each line one after another, independent of Claude Code or VS Code.
+  - Lines can be appended while it runs, and it resumes after the last finished line.
+  - A lock prevents two runners on the same queue.
+  - Its log is `experiments/v2_queue.log`.
+- `harness/synthetic.py`: Step 0c worlds and their oracles (W-null, W-vol, W-regime), the calibration rule, verdicts and stopping rule 1, with the report `experiments/reports/V2_0c.md` and the log `experiments/synthetic.csv` (no trials). Entry point: `scripts/run_agent.py --synthetic` / `--calibrate`.
+- Synthetic iteration options in `rl/exogenous.py` (all off by default, so V1 itself is unchanged):
+  - `algo.n_step` (hold targets);
+  - `algo.heads` + `agent.gate_z` (bootstrapped heads, uncertainty gate);
+  - `network.layer_norm`;
+  - `env.reward: mean_variance` with `mv_lambda: auto`.
+
+  `scripts/run_agent.py` gains `--set key=value` (YAML overrides, part of the config hash), `--worlds` and `--seeds`. The proposed candidate is `config/v2/V1b.yaml`, not run.
+- `rl/exogenous.py` + `config/v2/V1.yaml`: **V1**.
+  - Target-exposure actions with the exact cost head Q = U − κ|e′ − p|.
+  - Exogenous replay: all 5 exposures learnt from every (ticker, day), with no environment loop.
+  - The lazy buy-and-hold anchor (η = 0.01), with buy-and-hold value priors.
+  - It is selected by `agent.replay.mode: exogenous`.
+- `harness/report.py`: the report helpers that were copied across four scripts, now in one place.
+- `scripts/analyze_v2.py`: one generic report for every v2 step, including the §V8 adoption rule.
+- Tests: `tests/test_synthetic.py` (5) and `tests/test_exogenous.py` (7). The full suite has **116 passed**.
+
+**Changed**
+- `rl/policy.py`: the worker pool is now `train_jobs()`, shared by real and synthetic runs. V1 is selected in `run_job`.
+- `rl/networks.py`: `pos_dim = 0` gives a market-only network.
+- `rl/diagnostics.py`: the LC5/LC7 rollout for V1.
+- `harness/experiment.py`: `run_experiment(prices=…)` accepts injected data (synthetic worlds only). It refuses to log such a run as a trial or to unlock the test period.
+- `harness/diagnostics.py`: `strategy_scores` / `agent_scores`, moved there from `scripts/rescore_v2.py`, which is now 155 lines.
+- `scripts/analyze_m2.py`, `analyze_m4.py`, `rescore_costs.py`: use `harness/report.py`.
+- `PROTOCOL.md` **v2.0.2**: §V12.1 items 17–20 (synthetic implementation, calibration, V1 details, automatic stopping rule). They were written before the runs.
+
+**Verified**
+- Regenerated M2/M3/M4/cost-scenario and 0a reports have identical tables. The only differences are deflated-Sharpe values, because N_trials has grown; the committed historical versions were restored.
+- R0′'s decisions are reproduced 100 % through the refactored code.
+- The V1 smoke run on real data (F1, 5k updates, CPU, 83 s) trades 1.4–1.8 times per year on inner validation. This is a mechanics check only; no outer numbers were looked at.
+
+### 2026-10-06 — v2 Steps 0a (re-scoring) and 0b (data audit, pipeline v2)
+
+**Results** (details: `RESULTS.md` v2 sections, `experiments/reports/V2_0a_rescore.md`, `DATA_AUDIT.md`):
+- **0a:**
+  - Timing IC lies between −0.001 and +0.016 in all 16 trials, so there is no timing skill. The gap to buy-and-hold is mostly cost (R0: −0.23 = −0.09 timing − 0.14 cost).
+  - All agents pass gate G-lag (Δ lag-1 between −0.05 and +0.06).
+  - Action gaps are 0.15–0.52 of the TD-noise spread, so decisions are noise-driven, which explains why 13 of 16 agents switch every second day.
+  - Q is optimistic by 1.1–3.5 SDs of the realised return.
+  - The median best checkpoint comes at 26–47 % of training.
+  - New baseline vol_target: 0.14 (^GDAXI) / 0.53 (26 ETFs), below buy-and-hold.
+- **0b:**
+  - ρ̄ = 0.48, so N_eff ≈ 2. There are 6 drawdowns ≥ 15 %.
+  - Luck level for the best of 16 trials over the 9.7 validation years: Sharpe ≈ 0.58.
+  - Q1 leak quantified: the residual feature's correlation with the next-day DAX return is −0.15. The affected agents' ^GDAXI timing IC is ≈ 0, so they did not use it.
+  - Q2: frozen = fresh data within 0.03 bp.
+  - Q3: all 12 moves beyond 8σ are genuine.
+  - Q4: ^GDAXI has 9 zero-volume bars.
+  - Q5: clean.
+
+**Added**
+- `scripts/rescore_v2.py` (Step 0a driver) → `experiments/reports/V2_0a_rescore.md`, CSVs in `experiments/reports/v2_0a/`.
+- `harness/diagnostics.py`:
+  - timing IC and timing Sharpe (LC3), switches and time at anchor (LC6);
+  - exposure- and vol-matched drawdowns (H3 preview);
+  - learning-curve statistics (LC1).
+- `rl/diagnostics.py`: re-runs the saved checkpoints (CPU) for the action gap (LC5) and predicted vs realised value (LC7), with a reproduction check against the stored exposures.
+- `harness/baselines.py::vol_target` + `config/experiments/baseline_vol_target.yaml`: a descriptive, variance-managed baseline, logged as a baseline row (not a trial).
+- `scripts/audit_data.py` → `DATA_AUDIT.md`, CSVs in `experiments/reports/v2_0b/`. Offline, development data only; it runs the point-in-time tests itself.
+- `config/v2/R0prime.yaml`: R0′ for Step 0d = R0 + pipeline v2 + P = 40. **Prepared, not launched.**
+- Tests: `tests/test_v2_diagnostics.py` (6) and 7 new tests in `tests/test_features_m4.py`:
+  - the Q1 lag;
+  - the Q4 mask;
+  - the availability flag and the 450-bar warm-up;
+  - expanding z-score;
+  - v2 defaults;
+  - point-in-time behaviour of the v2 features.
+
+**Changed**
+- `harness/backtest.py`, `harness/experiment.py`: execution-lag option (default 0 = v1 behaviour).
+- `rl/policy.py`: the data pipeline is factored into `build_job_data`, `eval_market`, `eval_ranges`, `experiment_features` and `make_jobs`, shared by training and re-scoring. Behaviour is identical.
+- `rl/features_m4.py`: `pipeline: v2`:
+  - Q1 lag of ^GDAXI's residual features;
+  - Q4 volume mask;
+  - `resid_avail` flag with the 450-bar warm-up;
+  - z-score minimum 126 bars.
+
+  The default `v1` is unchanged.
+- `harness/config.py`: the `inherit:` depth limit is raised from 5 to 10, because the v2 configs sit 7 levels below `m2_dqn_base`.
+- `PROTOCOL.md` Part II **v2.0.1**: implementation clarifications §V12.1 (definitions, G-lag wording, pipeline details, z-score window kept at 252). No rule changed.
+- `RESULTS.md` (v2 sections, M4 provenance note quantified), `docs/CODEBASE_NOTES.md` §v2.
+- `.gitignore`: only the CSVs under `data/audit/` are ignored, so the Q2 manifests are committed; console logs of report scripts are ignored.
+
+**Verified**
+- 100 % of the stored exposures reproduced for all 16 trials (800 runs), so the refactored v1 path is identical.
+- Full test suite: **104 passed**.
+- R0′ config loads with P = 40. Its pipeline-v2 features are finite on real data. The availability flag starts at bar 450 (for DBC, USO and SLV between 2007-11 and 2008-02).
+- No trial added (N_trials = 16). The test period is untouched. No network access: Q2 used the owner's download of 2026-10-06, whose stooq part failed and was declared not needed by the owner.
+
+### 2026-10-06 — v2 programme approved and merged; download script; owner ideas analysed
+
+**Owner decisions:**
+- the v2 programme (owner draft `NEW_PROTOCOL.md` v2.2) is approved;
+- early stopping removed;
+- M6 (live forward test) deferred to future work;
+- Track B (H2) deferred to its own protocol, not dropped;
+- the Q2 data cross-check is kept;
+- **no automatic network access or git pushes** (owner-run downloads only), with **wandb online** as the one approved exception;
+- sources added by the owner are owner-verified.
+
+**Changed**
+- `PROTOCOL.md`: **Part II — v2 research programme** (v2.0, frozen before any v2 run). It is the owner's v2.2 text with headings/references prefixed V, the decisions above written in, and the owner's two ideas recorded in §V6.1. Part I is unchanged except for its status line and change log.
+- `docs/03_extracted_plan.md` §8: summary of v2.
+- `docs/evidence-dqn-trading.md`: the owner's 2026-10-06 literature entry plus the further references of Part II §V13, copied unchanged and marked owner-verified.
+- `RESULTS.md`: the v2 step table; provenance note in M4 on the ^GDAXI close-time leak (Q1).
+- `docs/CODEBASE_NOTES.md` §v2: map of where each v2 component hooks into the current code.
+- `.gitignore`: downloaded data under `data/audit/`, `data/longhistory/`, `data/external/` stays out of git; their `MANIFEST.json` files are committed.
+
+**Added**
+- `scripts/download_external.py`: owner-run downloads, never called by the code.
+  - `q2`: fresh Yahoo bars for all 34 series + unadjusted bars and dividends/splits for 5 spot-check tickers + stooq as a second source (~25 MB);
+  - `french`: daily industry portfolios + Fama/French factors (~1–3 MB; the 49-industry set adds ~6 MB);
+  - `fred`: BAA10Y (~0.3 MB).
+  - `--dry-run` prints the plan and sizes without any network access. It never overwrites, and it writes a sha256 manifest per folder.
+
+**Owner ideas analysed** (measured on stored exposures, no new runs):
+1. *Buy more than one unit per decision / based on the remaining capital.* Since M2 the agent already trades **capital fractions** (0–100 % of each ETF's sleeve), not shares. It is limited to one ¼-step per day. In R0 that limit rarely binds:
+   - 89 % of its moves are single steps;
+   - merging multi-step moves would remove only ≈ 12 % of its transactions.
+   - The real problem is jitter: R0 sits at 75 % or 100 % for 88 % of the time and toggles between them ≈ 64 times per ETF per year.
+   - Choosing the target exposure directly is part of V1 anyway, together with the cost band that targets exactly this jitter.
+2. *Costs per transaction, not per unit.* True for a broker's fixed fee (already modelled in the neo-broker scenario), not for the bid-ask spread, which is paid on every euro traded. V1's cost head gets an exact fixed-fee term for neo-broker variants.
+3. *Price-level bias (expensive vs cheap stocks).* Already excluded since M2: exposure is a fraction of capital, P&L is computed from returns, costs are proportional, and every input is scale-free. Fractional shares are assumed.
+4. **Deferred, needing their own protocol:** leverage above 100 % (it does not change the Sharpe ratio), a continuous fraction (needs policy-gradient methods), a shared capital pool across ETFs (portfolio allocation).
 
 ### 2026-10-05 — Phase 4–5 / M4: cross-asset agent, new features, conv-transformer
 

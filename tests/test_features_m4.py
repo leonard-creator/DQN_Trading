@@ -4,8 +4,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from rl.features_m4 import (M4_FEATURES, build_m4_features, m4_raw_frames, residual_returns,
-                            vix_features)
+from rl.features_m4 import (M4_FEATURES, _params, build_m4_features, m4_raw_frames, residual_returns,
+                            rolling_z, vix_features)
 from tests.conftest import make_prices
 
 SMALL = {"pca_k": 2, "corr_window": 80, "beta_window": 30, "cum_window": 10,
@@ -115,3 +115,95 @@ def test_m4_features_end_to_end_training(synthetic_agent_cfg):
                                                      "env": {"reward": "vol_scaled_pnl", "reward_clip": 10.0}}})
     res = run_experiment(cfg, seeds=[0], cost_levels=[10], log=False, verbose=False)
     assert len(res.metrics) == 2 and np.isfinite(res.metrics["sharpe"]).all()
+
+
+# --- pipeline v2 (PROTOCOL Part II §V2.3 Q1/Q4, §V0 item 6) -------------------------------
+V2 = dict(SMALL, pipeline="v2", early_close_tickers=["T7"], warmup_bars=200)
+FEATS = ["log_ret", "vol_rel20", "resid", "resid_cum30", "resid_avail"]
+
+
+def test_q1_early_close_ticker_never_sees_same_day_us_returns():
+    prices, vix, _ = factor_world()
+    tickers = list(prices)
+    t = 350
+    shocked = {k: d.copy() for k, d in prices.items()}
+    for k in tickers[:6]:                                     # the "US-hours" factor tickers
+        for col in ("Open", "High", "Low", "Close"):
+            shocked[k].iloc[t:, shocked[k].columns.get_loc(col)] *= 1.05   # +5 % on day t, then flat
+    col = FEATS.index("resid")
+    for params, leaks in ((V2, False), (dict(SMALL, pipeline="v1"), True)):
+        a = build_m4_features(prices, tickers, FEATS, tickers[:6], vix, params)["T7"]
+        b = build_m4_features(shocked, tickers, FEATS, tickers[:6], vix, params)["T7"]
+        changed_at_t = not np.isclose(a[t, col], b[t, col])
+        assert changed_at_t == leaks, f"pipeline {params['pipeline']}: day-t residual leak = {changed_at_t}"
+        assert not np.isclose(a[t + 1, col], b[t + 1, col])    # the information arrives one bar later
+    # US-hours tickers keep their same-day residual (their own close is the US close)
+    a0 = build_m4_features(prices, tickers, FEATS, tickers[:6], vix, V2)["T0"]
+    b0 = build_m4_features(shocked, tickers, FEATS, tickers[:6], vix, V2)["T0"]
+    assert not np.isclose(a0[t, col], b0[t, col])
+
+
+def test_q4_zero_or_constant_volume_is_masked():
+    prices, vix, _ = factor_world()
+    p = {k: d.copy() for k, d in prices.items()}
+    p["T7"].iloc[200:260, p["T7"].columns.get_loc("Volume")] = 0.0
+    p["T6"].iloc[300:360, p["T6"].columns.get_loc("Volume")] = 1000.0     # constant
+    f = build_m4_features(p, list(p), FEATS, list(p)[:6], vix, V2)
+    c = FEATS.index("vol_rel20")
+    assert np.all(f["T7"][200:260, c] == 0.0)
+    assert np.all(f["T6"][320:360, c] == 0.0)                   # window fully constant after 20 bars
+    assert np.any(f["T7"][150:200, c] != 0.0)
+
+
+def test_resid_avail_flag_marks_the_warm_up():
+    prices, vix, _ = factor_world()
+    f = build_m4_features(prices, list(prices), FEATS, list(prices)[:6], vix, V2)["T0"]
+    flag = f[:, FEATS.index("resid_avail")]
+    assert set(np.unique(flag)) == {0.0, 1.0}
+    first = int(np.argmax(flag == 1.0))
+    assert first > SMALL["corr_window"] and np.all(flag[first:] == 1.0)
+    assert np.all(f[:first, FEATS.index("resid")] == 0.0)
+
+
+def test_v2_features_still_have_no_lookahead():
+    prices, vix, _ = factor_world()
+    tickers = list(prices)
+    base = build_m4_features(prices, tickers, FEATS, tickers[:6], vix, V2)
+    t = 330
+    pert = {k: d.copy() for k, d in prices.items()}
+    rng = np.random.default_rng(3)
+    for d in pert.values():
+        noise = np.exp(0.3 * rng.standard_normal(len(d) - t - 1))
+        for col in ("Open", "High", "Low", "Close"):
+            d.iloc[t + 1:, d.columns.get_loc(col)] *= noise
+    new = build_m4_features(pert, tickers, FEATS, tickers[:6], vix, V2)
+    for k in tickers:
+        np.testing.assert_array_equal(base[k][: t + 1], new[k][: t + 1], err_msg=k)
+
+
+def test_v2_defaults_follow_the_protocol():
+    v2, v1 = _params({"pipeline": "v2"}), _params(None)
+    assert v2["early_close_tickers"] == ["^GDAXI"] and v2["mask_volume"]
+    assert v2["warmup_bars"] == 450 and v2["z_min_periods"] == 126 and v2["z_window"] == 252
+    assert v1["early_close_tickers"] == [] and not v1["mask_volume"]
+    assert v1["warmup_bars"] == 0 and v1["z_min_periods"] == 60       # v1 trials keep their features
+    assert _params({"pipeline": "v2", "z_min_periods": 60})["z_min_periods"] == 60   # explicit wins
+
+
+def test_availability_flag_is_zero_until_warmup_bars_of_history():
+    prices, vix, _ = factor_world()
+    f = build_m4_features(prices, list(prices), FEATS, list(prices)[:6], vix, dict(V2, warmup_bars=300))["T0"]
+    flag, res = f[:, FEATS.index("resid_avail")], f[:, FEATS.index("resid")]
+    assert np.all(flag[:300] == 0.0) and np.all(res[:300] == 0.0)
+    assert np.all(flag[300:] == 1.0) and np.any(res[300:] != 0.0)       # z-scores were valid long before
+
+
+def test_z_score_is_expanding_until_the_window_is_full():
+    x = pd.DataFrame({"a": np.random.default_rng(4).standard_normal(400)})
+    z = rolling_z(x, window=252, min_periods=126)["a"].to_numpy()
+    assert np.all(np.isnan(z[:125])) and np.isfinite(z[125])            # 126 bars needed
+    for i in (125, 200, 251):                                             # expanding before 252 bars
+        h = x["a"].to_numpy()[: i + 1]
+        assert z[i] == pytest.approx((h[-1] - h.mean()) / h.std(ddof=1))
+    h = x["a"].to_numpy()[300 - 251: 301]                                 # rolling afterwards
+    assert z[300] == pytest.approx((h[-1] - h.mean()) / h.std(ddof=1))

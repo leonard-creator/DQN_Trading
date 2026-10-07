@@ -32,9 +32,9 @@ from harness import metrics as mt                                        # noqa:
 from harness import trials as tr                                         # noqa: E402
 from harness.config import repo_path                                     # noqa: E402
 from harness.data import load_prices                                     # noqa: E402
-from harness.experiment import (compare_to_baselines, deflated_sharpe_of,  # noqa: E402
-                                load_result, pbo_over)
+from harness.experiment import compare_to_baselines, deflated_sharpe_of, pbo_over  # noqa: E402
 from harness.splits import block_positions, folds_from_config            # noqa: E402
+from harness.report import COLS, cost_table, fold_table, latest, perf_table  # noqa: E402
 
 AGENTS = ["legacy", "m2_dqn_base", "m2_dqn_dueling", "m2_dqn_nstep", "m2_dqn_per"]
 # preset reports: (configs, title, report file)
@@ -47,57 +47,13 @@ PRESETS = {
 BASES = {"buy_and_hold": "baseline_buy_and_hold", "momentum": "baseline_momentum",
          "macd": "baseline_macd", "random": "baseline_random"}
 ES = "single"
+COLS_M2 = COLS + [("hit_rate", "Hit rate")]
 COLLAPSE = 0.5          # Sharpe drop from the run's best inner value that counts as a collapse
-
-
-def latest(name):
-    """Latest logged trial of a configuration, or None if it has not run yet."""
-    t = tr.load_trials()
-    rows = t[t["name"] == name]
-    if rows.empty:
-        print(f"[analyze_m2] no logged trial named {name} yet; skipped")
-        return None
-    return load_result(rows.iloc[-1]["output_dir"])
 
 
 def runs_of(res):
     base = os.path.join(res.output_dir, "agent")
     return sorted(os.path.join(base, d) for d in os.listdir(base))
-
-
-def cell(x, iqr=None, pct=False, digits=2):
-    if x is None or not np.isfinite(x):
-        return "n/a"
-    f = (lambda v: f"{100 * v:.1f}%") if pct else (lambda v: f"{v:.{digits}f}")
-    return f(x) + (f" ({f(iqr)})" if iqr is not None and np.isfinite(iqr) else "")
-
-
-def perf_table(results, cost):
-    cols = [("sharpe", "Sharpe", False), ("cagr", "CAGR", True), ("max_drawdown", "MaxDD", True),
-            ("turnover", "Turnover/yr", False), ("exposure", "Exposure", True),
-            ("avg_holding", "Hold (bars)", False), ("hit_rate", "Hit rate", True)]
-    lines = ["| Strategy | " + " | ".join(c[1] for c in cols) + " |", "|---" * (len(cols) + 1) + "|"]
-    for name, res in results.items():
-        a = mt.aggregate(res.runs(ES, cost))
-        lines.append(f"| {name} | " + " | ".join(cell(a[f'{k}_median'], a[f'{k}_iqr'], pct) for k, _, pct in cols) + " |")
-    return "\n".join(lines)
-
-
-def fold_table(results, cost):
-    folds = sorted(next(iter(results.values())).runs(ES, cost)["fold"].unique())
-    lines = ["| Strategy | " + " | ".join(folds) + " |", "|---" * (len(folds) + 1) + "|"]
-    for name, res in results.items():
-        med = res.runs(ES, cost).groupby("fold")["sharpe"].median()
-        lines.append(f"| {name} | " + " | ".join(f"{med[f]:.2f}" for f in folds) + " |")
-    return "\n".join(lines)
-
-
-def cost_table(results, levels):
-    lines = ["| Strategy | " + " | ".join(f"{c} bp" for c in levels) + " |", "|---" * (len(levels) + 1) + "|"]
-    for name, res in results.items():
-        lines.append(f"| {name} | " + " | ".join(
-            f"{res.runs(ES, c)['sharpe'].median():.2f}" for c in levels) + " |")
-    return "\n".join(lines)
 
 
 def stability(res, prices, cfg):
@@ -189,9 +145,9 @@ def main(argv=None):
          "Cells: median (IQR) over 10 seeds x 5 walk-forward folds, outer validation 2014-01 → 2023-09, "
          f"net of {primary} bp + 1 bp half-spread. Baselines in *italics*. Checkpoints were selected on the "
          "inner validation slice only.", "",
-         f"## 1. Performance @ {primary} bp", "", perf_table(everything, primary), "",
-         f"### Median Sharpe per fold @ {primary} bp", "", fold_table(everything, primary), "",
-         "### Cost sweep (median Sharpe)", "", cost_table(everything, levels), ""]
+         f"## 1. Performance @ {primary} bp", "", perf_table(everything, ES, primary, COLS_M2), "",
+         f"### Median Sharpe per fold @ {primary} bp", "", fold_table(everything, ES, primary), "",
+         "### Cost sweep (median Sharpe)", "", cost_table(everything, ES, levels), ""]
 
     L += ["## 2. Stability (go criterion)", "",
           f"*Best→last drop ≥ {COLLAPSE}* counts runs whose final inner-validation Sharpe is ≥ {COLLAPSE} below "

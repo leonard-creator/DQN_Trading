@@ -38,11 +38,55 @@ def _curve_row(job_dir, best_update):
     return c.iloc[int((c["update"] - best_update).abs().idxmin())]
 
 
+def _rollout_env(agent, sub, ranges, a, jd, costs):
+    """Greedy pass of an environment-loop agent: per sleeve (q, valid mask, action, reward), exposures."""
+    from rl.env import VecTradingEnv
+    env = VecTradingEnv(sub, ranges, a["env"], jd["K"], jd["short"], costs, mode="eval")
+    flat, steps = np.full(len(sub.close), np.nan), []
+    while env.active.any():
+        g, pv, mk = env.observe()
+        live = env.active.copy()
+        q = agent.q_values(sub.windows(np.where(live, g, g.min())), pv)
+        act = np.argmax(np.where(mk, q, -np.inf), axis=1)
+        out = env.step(act)
+        flat[g[live]] = out["exposure"][live]
+        steps.append((live, q, mk, act, out["reward"].astype(np.float64)))
+    sleeves = []
+    for b in range(len(ranges)):
+        live = np.array([st[0][b] for st in steps])
+        sleeves.append(tuple(np.array([st[k][b] for st in steps])[live] for k in (1, 2, 3, 4)))
+    return sleeves, flat
+
+
+def _rollout_band(agent, sub, ranges, a, costs, lam=0.0):
+    """Greedy pass of a V1 agent (rl/exogenous.py): Q = U - cost of moving, reward = training reward."""
+    from rl.exogenous import cost_arrays, decide
+    rate, fee, hold = cost_arrays(sub, costs)
+    grid, eta, clip = agent.grid, float(a.get("anchor_eta", 0.0)), a["env"].get("reward_clip")
+    z_gate = float(a.get("gate_z", 0.0))
+    flat, sleeves = np.full(len(sub.close), np.nan), []
+    for i, (lo, hi) in enumerate(ranges):
+        g = sub.offsets[i] + np.arange(lo, hi)
+        u_all, p, qs, acts, rs = agent.u_values(sub.windows(g)), 0.0, [], [], []
+        for j, gj in enumerate(g):
+            kap, phi = rate[gj] / sub.sigma[gj], fee[gj] / sub.sigma[gj]
+            k = decide(u_all[j], p, grid, kap, phi, z_gate)
+            u = np.atleast_2d(u_all[j]).mean(axis=0)                 # several heads: their mean
+            q = u - (kap * np.abs(grid - p) + phi * (grid != p))
+            x = grid[k] * (sub.close[gj + 1] / sub.close[gj] - 1.0 - hold[gj]) / sub.sigma[gj]
+            x = float(np.clip(x, -clip, clip)) if clip else x
+            x -= 0.5 * lam * x * x                                   # mean-variance reward (lam = 0 otherwise)
+            rs.append(x + q[k] - u[k] - eta * (grid[k] != 1.0))     # q - u = minus the trading cost
+            qs.append(q)
+            acts.append(k)
+            p = flat[gj] = grid[k]
+        sleeves.append((np.array(qs), np.ones((len(qs), len(grid)), bool), np.array(acts), np.array(rs)))
+    return sleeves, flat
+
+
 def job_q_diagnostics(args):
     """Diagnostics of one job. `args` = (job dict, job_dir). Runs in a worker process."""
     job, job_dir = args
-    from rl.agent import DQNAgent
-    from rl.env import N_ACTIONS, VecTradingEnv
     from rl.policy import build_job_data, eval_market, eval_ranges
 
     cfg = job["cfg"]
@@ -58,32 +102,26 @@ def job_q_diagnostics(args):
     sub = eval_market(jd, eval_t)
     fold = job["folds"][0]
     ranges = eval_ranges(job, jd, fold, eval_t)
-    env = VecTradingEnv(sub, ranges, a["env"], jd["K"], jd["short"],
-                        [jd["cost_of"](t, len(eval_t)) for t in eval_t], mode="eval")
-    agent = DQNAgent(jd["W"], sub.n_feat, env.pos_dim, N_ACTIONS, a["network"], a["algo"], total_updates=1)
-    agent.online.load_weights(os.path.join(job_dir, "best.weights.h5"))
-
-    flat = np.full(len(sub.close), np.nan)
-    steps = []
-    while env.active.any():
-        g, pv, mk = env.observe()
-        live = env.active.copy()
-        q = agent.q_values(sub.windows(np.where(live, g, g.min())), pv)
-        act = np.argmax(np.where(mk, q, -np.inf), axis=1)
-        out = env.step(act)
-        flat[g[live]] = out["exposure"][live]
-        steps.append((live, q, mk, act, out["reward"].astype(np.float64)))
+    costs = [jd["cost_of"](t, len(eval_t)) for t in eval_t]
+    if a.get("replay", {}).get("mode", "agent") == "exogenous":
+        from rl.exogenous import UAgent
+        levels = a["env"].get("levels", cfg["evaluation"]["position_levels"])
+        agent = UAgent(jd["W"], sub.n_feat, levels, a["network"], a["algo"], total_updates=1)
+        agent.online.load_weights(os.path.join(job_dir, "best.weights.h5"))
+        sleeves, flat = _rollout_band(agent, sub, ranges, a, costs, float(info.get("mv_lambda", 0.0)))
+    else:
+        from rl.agent import DQNAgent
+        from rl.env import N_ACTIONS, VecTradingEnv
+        pos_dim = VecTradingEnv(sub, ranges, a["env"], jd["K"], jd["short"], costs, mode="eval").pos_dim
+        agent = DQNAgent(jd["W"], sub.n_feat, pos_dim, N_ACTIONS, a["network"], a["algo"], total_updates=1)
+        agent.online.load_weights(os.path.join(job_dir, "best.weights.h5"))
+        sleeves, flat = _rollout_env(agent, sub, ranges, a, jd, costs)
 
     stored = np.load(os.path.join(job_dir, "exposures.npz"))
     rows = []
-    for b, t in enumerate(eval_t):
-        live = np.array([s[0][b] for s in steps])
-        q = np.array([s[1][b] for s in steps])[live]
-        mk = np.array([s[2][b] for s in steps])[live]
-        act = np.array([s[3][b] for s in steps])[live]
-        r = np.array([s[4][b] for s in steps])[live] / scale
-        qv = np.where(mk, q, -np.inf)
-        top2 = np.sort(qv, axis=1)[:, -2:]
+    for b, (t, (q, mk, act, r)) in enumerate(zip(eval_t, sleeves)):
+        r = r / scale
+        top2 = np.sort(np.where(mk, q, -np.inf), axis=1)[:, -2:]
         gap = top2[:, 1] - top2[:, 0]
         gap = gap[np.isfinite(gap)]
         G = np.zeros(len(r))

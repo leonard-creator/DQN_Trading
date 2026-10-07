@@ -38,13 +38,28 @@ Residual features (plan §7 Track A1, after Guijarro-Ordonez, Pelger & Zanotti 2
 
 All features are then z-scored with a trailing window, clipped to +-clip, and
 NaN warm-up values are set to 0.
+
+Pipeline v2 (params `pipeline: v2`; PROTOCOL Part II §V2.3 and §V6.0). Off by
+default, so every v1 trial keeps exactly its features:
+    Q1  close-time lag: for tickers whose exchange closes BEFORE the US close
+        (`early_close_tickers`, default ["^GDAXI"]), the cross-asset features
+        (resid, resid_cum30) use the previous bar's value. Their day-t value
+        contains US returns of day t, which settle 4.5 h after the DAX close.
+    Q4  relative volume is masked (set to unavailable) where volume is zero or
+        constant over the 20-bar window (index volumes are unreliable).
+    flag  resid_avail = 1 once both residual features have a valid z-score AND the
+        ticker has `warmup_bars` (default 450) bars of history; before that both
+        residual features are 0 (warm-up rule, §V0 item 6). Binary, not z-scored.
+    z   the trailing z-score needs `z_min_periods` = 126 bars (default for v2;
+        expanding until the window is full). The window stays 252 bars as in M4.
 """
 
 import numpy as np
 import pandas as pd
 
 M4_FEATURES = ["log_ret", "p_sma20", "p_sma50", "bb_pctb", "rsi14", "macd_hist", "vol_rel20",
-               "atr14_p", "sigma20", "vix_lag1", "vix_chg_lag1", "resid", "resid_cum30"]
+               "atr14_p", "sigma20", "vix_lag1", "vix_chg_lag1", "resid", "resid_cum30", "resid_avail"]
+FLAG_FEATURES = ("resid_avail",)          # binary availability flags: never z-scored
 RESID_FEATURES = ("resid", "resid_cum30")
 VIX_FEATURES = ("vix_lag1", "vix_chg_lag1")
 
@@ -153,8 +168,15 @@ def rolling_z(frame, window=252, min_periods=60):
 
 
 def _params(params):
-    return {"pca_k": 3, "corr_window": 252, "beta_window": 60, "cum_window": 30,
-            "z_window": 252, "z_min_periods": 60, "clip": 5.0, **(params or {})}
+    p = {"pca_k": 3, "corr_window": 252, "beta_window": 60, "cum_window": 30,
+         "z_window": 252, "z_min_periods": 60, "clip": 5.0, "pipeline": "v1", **(params or {})}
+    v2 = p["pipeline"] == "v2"
+    p.setdefault("early_close_tickers", ["^GDAXI"] if v2 else [])
+    p.setdefault("mask_volume", v2)
+    p.setdefault("warmup_bars", 450 if v2 else 0)          # §V0 item 6: long-lookback features
+    if v2 and "z_min_periods" not in (params or {}):
+        p["z_min_periods"] = 126                           # §V0 item 6: expanding z-score, >= 126 bars
+    return p
 
 
 def m4_raw_frames(prices, tickers, features, factor_tickers, vix=None, params=None):
@@ -169,6 +191,10 @@ def m4_raw_frames(prices, tickers, features, factor_tickers, vix=None, params=No
         raise KeyError(f"unknown M4 features {unknown}")
     if any(f in VIX_FEATURES for f in features) and vix is None:
         raise ValueError("VIX features requested but no ^VIX data given")
+    if "resid_avail" in features and not all(f in features for f in RESID_FEATURES):
+        raise ValueError("resid_avail needs both residual features")
+    features = [f for f in features if f not in FLAG_FEATURES]       # flags are derived after z-scoring
+    early = set(p["early_close_tickers"])
     resid = None
     if any(f in RESID_FEATURES for f in features):
         names = sorted(set(tickers) | set(factor_tickers))
@@ -184,6 +210,12 @@ def m4_raw_frames(prices, tickers, features, factor_tickers, vix=None, params=No
             r = resid[t].reindex(df.index)
             raw["resid"] = r
             raw["resid_cum30"] = r.rolling(p["cum_window"], min_periods=p["cum_window"]).sum()
+            if t in early:
+                # Q1: the day-t residual uses US returns of day t, unknown at this ticker's close
+                raw[["resid", "resid_cum30"]] = raw[["resid", "resid_cum30"]].shift(1)
+        if p["mask_volume"] and "vol_rel20" in raw:
+            v = df["Volume"].astype(float)
+            raw["vol_rel20"] = raw["vol_rel20"].where((v > 0) & (v.rolling(20).std() > 0))
         out[t] = raw[features]
     return out
 
@@ -197,12 +229,22 @@ def build_m4_features(prices, tickers, features, factor_tickers, vix=None, param
     factor_tickers : universe used for the residual PCA (training ETFs)
     vix            : ^VIX DataFrame (required if a VIX feature is requested)
     params         : pca_k, corr_window, beta_window, cum_window, z_window,
-                     z_min_periods, clip
+                     z_min_periods, clip, pipeline (v1 | v2), early_close_tickers,
+                     mask_volume, warmup_bars
     """
     p = _params(params)
     out = {}
     for t, raw in m4_raw_frames(prices, tickers, features, factor_tickers, vix, p).items():
         z = rolling_z(raw, p["z_window"], p["z_min_periods"])
-        x = np.clip(z.to_numpy(dtype=float), -p["clip"], p["clip"])
+        z = z.clip(-p["clip"], p["clip"])
+        if "resid_avail" in features:
+            # the residual GROUP is available only when both members are and the ticker
+            # has warmup_bars of history; until then both stay 0 and the flag is 0
+            # (PROTOCOL Part II §V0 item 6)
+            ok = z["resid"].notna() & z["resid_cum30"].notna()
+            ok &= np.arange(len(z)) >= int(p["warmup_bars"])
+            z.loc[~ok, list(RESID_FEATURES)] = np.nan
+            z["resid_avail"] = ok.astype(float)
+        x = z[list(features)].to_numpy(dtype=float)               # column order = config order
         out[t] = np.nan_to_num(x, nan=0.0).astype(np.float32)
     return out

@@ -18,6 +18,12 @@ entering a position on the first day is charged. The position is not
 liquidated at the end of a block (it is marked to market), which treats all
 strategies the same way.
 
+Execution lag (PROTOCOL Part II §V7 LC8, §V10.1): with lag = L, the exposure
+decided at the close of bar t is EXECUTED at the close of bar t+L, i.e. held
+from t+L to t+L+1. The first L return days of a block are flat. lag = 0 is the
+v1 convention; lag = 1 ("decide after today's close, trade at tomorrow's
+close") is the realistic one.
+
 Cost models
 -----------
 * PROTOCOL cost levels (H1): rate = (c + half_spread) / 10,000 per unit of
@@ -105,7 +111,7 @@ def scenario_cost(scenario, ticker, n_positions, bars_per_year=252):
 # ---------------------------------------------------------------------------
 # backtest
 # ---------------------------------------------------------------------------
-def backtest(close, exposure, val_positions, cost):
+def backtest(close, exposure, val_positions, cost, lag=0):
     """Net daily returns of one ticker over one evaluation block.
 
     close         : 1-D array of closing prices (full history of the ticker)
@@ -113,6 +119,7 @@ def backtest(close, exposure, val_positions, cost):
                     Only the decision bars val_positions-1 are read.
     val_positions : integer RETURN positions of the block (harness.splits.block_positions)
     cost          : CostModel, or a float = proportional rate (see cost_rate)
+    lag           : execution lag in bars (0 = v1 convention, 1 = next close)
 
     Returns a dict of arrays aligned with val_positions:
     exposure (held during the return day), gross, turnover, trades (0/1), cost, net.
@@ -133,6 +140,10 @@ def backtest(close, exposure, val_positions, cost):
     held = exposure[pos - 1]                                  # decided at the previous bar
     if not np.all(np.isfinite(held)):
         raise ValueError("exposure is NaN/inf on a decision bar of the block")
+    if lag:
+        # executed L closes later; the block's first L days are flat
+        L = int(lag)
+        held = np.concatenate((np.zeros(min(L, len(held))), held[:max(0, len(held) - L)]))
     prev = np.concatenate(([0.0], held[:-1]))                 # start flat
     asset_ret = close[pos] / close[pos - 1] - 1.0
     gross = held * asset_ret

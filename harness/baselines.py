@@ -53,6 +53,26 @@ def macd_crossover(close, fast=12, slow=26, signal=9, allow_short=False):
     return e
 
 
+def vol_target(close, span=60, min_history=252, levels=4):
+    """Volatility-managed exposure (descriptive baseline, PROTOCOL Part II step 0a).
+
+    exposure_t = min(1, (sigma_bar_t / sigma_t)^2), after Moreira & Muir (2017):
+      sigma_t     = EWMA daily volatility (span `span`) of log returns up to bar t
+      sigma_bar_t = median of sigma over all bars up to t (expanding, >= min_history bars)
+    Rounded to the 1/levels grid (long-only, capped at 1). Fully causal; flat
+    until min_history bars of volatility exist.
+    """
+    c = pd.Series(np.asarray(close, dtype=np.float64))
+    lr = np.log(c).diff()
+    sig = lr.ewm(span=int(span), min_periods=int(span) // 2).std()
+    sig_bar = sig.expanding(min_periods=int(min_history)).median()
+    with np.errstate(divide="ignore", invalid="ignore"):
+        raw = np.minimum(1.0, (sig_bar / sig) ** 2)
+    e = np.round(raw.to_numpy() * levels) / levels
+    e[~np.isfinite(e)] = 0.0
+    return e
+
+
 def stable_seed(*parts):
     """Deterministic integer seed from strings/ints.
 
@@ -117,13 +137,18 @@ def _rand(close, dec, seed, ticker, fold, cfg, p):
                         stable_seed(seed, ticker, fold), ev["allow_short"])
 
 
+def _vt(close, dec, seed, ticker, fold, cfg, p):
+    return vol_target(close, levels=cfg["evaluation"]["position_levels"], **p)
+
+
 BASELINES = {
     "buy_and_hold": _bh,
     "momentum": _mom,
     "macd": _macd,
     "random": _rand,
+    "vol_target": _vt,          # descriptive only (v2 step 0a); not one of the four H1 baselines
 }
 
 # Deterministic baselines give identical results for every seed, so the
 # harness computes them once and reuses them across seeds.
-DETERMINISTIC = {"buy_and_hold", "momentum", "macd"}
+DETERMINISTIC = {"buy_and_hold", "momentum", "macd", "vol_target"}

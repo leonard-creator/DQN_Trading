@@ -1,0 +1,35 @@
+# v2 job queue (PROTOCOL Part II), run by scripts/run_queue.sh, detached from any session.
+# One command per line; lines may be appended while the queue runs. Output: experiments/v2_queue.log
+# Step 0d: R0' = R0 + pipeline v2 + P = 40 (+1 trial). 10 workers x 3 threads = 30 of 40 cores.
+python -u scripts/run_agent.py --config config/v2/R0prime.yaml --workers 10 > experiments/runs/v2_R0prime_train.log 2>&1
+# Step 0d report: R0' vs R0 (§V8 table descriptive here), §V7 diagnostics, G-lag -> experiments/reports/V2_0d.md
+python -u scripts/analyze_v2.py --step 0d --trials v2_R0prime --reference m4_cross_resid_transformer --workers 12 --threads 2 > experiments/runs/v2_0d_report.log 2>&1
+# Step 0c (R0' half): 3 synthetic worlds x 5 seeds = 15 runs, logged in experiments/synthetic.csv (no trial)
+python -u scripts/run_agent.py --config config/v2/R0prime.yaml --synthetic --workers 10 > experiments/runs/v2_0c_R0prime.log 2>&1
+# Step 0c (V1 half): the same 15 synthetic runs for V1 (no trial)
+python -u scripts/run_agent.py --config config/v2/V1.yaml --synthetic --workers 10 > experiments/runs/v2_0c_V1.log 2>&1
+# Step 1: V1 on real data (+1 trial) ONLY if stopping rule 1 allows it (R0' and V1 must not both fail W-vol and W-regime)
+python -c "import sys; from harness.synthetic import real_data_allowed; sys.exit(0 if real_data_allowed() else 1)" && python -u scripts/run_agent.py --config config/v2/V1.yaml --workers 10 > experiments/runs/v2_V1_train.log 2>&1
+# Step 1 report: V1 vs R0' with the §V8 adoption rule -> experiments/reports/V2_1.md
+python -u scripts/analyze_v2.py --step 1 --trials v2_V1 --reference v2_R0prime --workers 12 --threads 2 > experiments/runs/v2_1_report.log 2>&1
+# --- Stopping rule 1 fired (2026-10-07 00:58): R0' and V1 both fail W-vol and W-regime -> iterate on SYNTHETIC data (§V8; no trials).
+# Diagnosis: V1's U(1)-U(0) tracks the oracle (corr up to +0.38) but is ~10x too small to open the no-trade band.
+# Screen, one change each vs V1 (3 worlds x 5 seeds each, experiments/synthetic.csv; no real-data run until the owner has seen it):
+python -u scripts/run_agent.py --config config/v2/V1.yaml --synthetic --workers 10 --set name=v2_V1_mse_n20 agent.algo.loss=mse agent.algo.n_step=20 > experiments/runs/v2_0c_V1_mse_n20.log 2>&1
+python -u scripts/run_agent.py --config config/v2/V1.yaml --synthetic --workers 10 --set name=v2_V1_mse agent.algo.loss=mse > experiments/runs/v2_0c_V1_mse.log 2>&1
+python -u scripts/run_agent.py --config config/v2/V1.yaml --synthetic --workers 10 --set name=v2_V1_n20 agent.algo.n_step=20 > experiments/runs/v2_0c_V1_n20.log 2>&1
+python -u scripts/run_agent.py --config config/v2/V1.yaml --synthetic --workers 10 --set name=v2_V1_eta0 agent.anchor_eta=0.0 > experiments/runs/v2_0c_V1_eta0.log 2>&1
+python -u scripts/run_agent.py --config config/v2/V1.yaml --synthetic --workers 10 --set name=v2_V1_lr1e-3 agent.algo.lr=0.001 > experiments/runs/v2_0c_V1_lr.log 2>&1
+# V2-type follow-up on the best screen setting (mse + n20): 10 bootstrapped heads + uncertainty gate z = 1 (§V6.2), then + LayerNorm
+python -u scripts/run_agent.py --config config/v2/V1.yaml --synthetic --workers 10 --set name=v2_V1_mse_n20_h10g1 agent.algo.loss=mse agent.algo.n_step=20 agent.algo.heads=10 agent.gate_z=1.0 > experiments/runs/v2_0c_V1_h10g1.log 2>&1
+python -u scripts/run_agent.py --config config/v2/V1.yaml --synthetic --workers 10 --set name=v2_V1_mse_n20_h10g1_ln agent.algo.loss=mse agent.algo.n_step=20 agent.algo.heads=10 agent.gate_z=1.0 agent.network.layer_norm=true > experiments/runs/v2_0c_V1_h10g1_ln.log 2>&1
+# Risk-aware reward in the exact head: mean-variance with lambda = mean(z)/mean(z^2) from the training data
+# (full exposure optimal on average); vol_scaled_pnl is risk-neutral and can never prefer de-risking in W-vol
+python -u scripts/run_agent.py --config config/v2/V1.yaml --synthetic --workers 10 --set name=v2_V1_mse_n20_mv agent.algo.loss=mse agent.algo.n_step=20 agent.env.reward=mean_variance agent.env.mv_lambda=auto > experiments/runs/v2_0c_V1_mv.log 2>&1
+# --- Screen result (03:00): only V1 + mse + n20 + 10 heads + gate z=1 passes W-regime (and W-null). Checks before the owner decides (no trials):
+# robustness on 5 further synthetic seeds (paths 1005-1009 / 2005-2009; protocol pass criteria stay defined on seeds 0-4)
+python -u scripts/run_agent.py --config config/v2/V1.yaml --synthetic --workers 10 --seeds 5 6 7 8 9 --set name=v2_V1_mse_n20_h10g1_s5-9 agent.algo.loss=mse agent.algo.n_step=20 agent.algo.heads=10 agent.gate_z=1.0 > experiments/runs/v2_0c_V1_h10g1_s59.log 2>&1
+# a stricter gate (z = 2): less noise trading in W-null?
+python -u scripts/run_agent.py --config config/v2/V1.yaml --synthetic --workers 10 --set name=v2_V1_mse_n20_h10g2 agent.algo.loss=mse agent.algo.n_step=20 agent.algo.heads=10 agent.gate_z=2.0 > experiments/runs/v2_0c_V1_h10g2.log 2>&1
+# W-vol hypothesis: the anchor's hurdle (~0.16 Sharpe) eats the whole W-vol gain (+0.19); risk-aware reward without the anchor
+python -u scripts/run_agent.py --config config/v2/V1.yaml --synthetic --workers 10 --set name=v2_V1_mse_n20_h10g1_mv_eta0 agent.algo.loss=mse agent.algo.n_step=20 agent.algo.heads=10 agent.gate_z=1.0 agent.env.reward=mean_variance agent.env.mv_lambda=auto agent.anchor_eta=0.0 > experiments/runs/v2_0c_V1_mv_eta0.log 2>&1

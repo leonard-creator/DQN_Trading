@@ -1,0 +1,14 @@
+# PROPOSED (2026-10-07, awaiting owner approval; NOT run): V1b = the only variant of the synthetic iteration
+# after stopping rule 1 (PROTOCOL Part II §V12.1 item 21) that passes W-null and W-regime:
+#   V1 (target exposures, exact cost head, exogenous replay, lazy anchor eta = 0.01)
+#   + MSE instead of Huber          (Huber with delta 1 on TD errors ~3 learns the small mean gaps too slowly)
+#   + 20-step "hold" targets        (propagates regime value 20x faster; n = H_max = 20 inside P = 40)
+#   + 10 bootstrapped U-heads with the uncertainty gate z = 1 (§V6.2): move only if the heads agree
+# Synthetic result (median of 5, seeds 0-4): W-null pass (0.1 turns/yr), W-regime net +0.26 Sharpe over
+# buy-and-hold (72 % of the oracle, 4.7 turns/yr), W-vol fail (+0.00). Robustness, seeds 5-9: W-regime +0.05
+# only (fail); pooled 10 seeds +0.06 = 16 % of the oracle, positive in 8/10 runs. Real data: Step 1, +1 trial.
+inherit: config/v2/V1.yaml
+name: v2_V1b
+agent:
+  gate_z: 1.0
+  algo: {loss: mse, n_step: 20, heads: 10}

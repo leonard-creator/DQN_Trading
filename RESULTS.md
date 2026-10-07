@@ -13,6 +13,18 @@ Results under [`PROTOCOL.md`](PROTOCOL.md) (v1.2), one section per milestone. Ev
 | M5 — single frozen-test evaluation | locked; needs owner approval |
 | Secondary: neo-broker cost scenario | **done 2026-10-05**, see the last section |
 
+**v2 programme** (`PROTOCOL.md` Part II, approved 2026-10-06; budget ≤ 10 new trials, cumulative ≤ 26):
+
+| Step | Content | Status |
+|---|---|---|
+| 0a | Re-score existing trials (lag 1, timing IC, attribution, learning curves, new descriptive baselines) | **done 2026-10-06**: no timing skill in any trial; every agent passes G-lag; see below |
+| 0b | Data audit + Q1 leak fix (`DATA_AUDIT.md`) | **done 2026-10-06**: data clean; Q1 leak quantified and fixed (pipeline v2); see below |
+| 0c | Synthetic positive controls (W-null, W-vol, W-regime) | **done 2026-10-07**: R0′ fails all 3 worlds; V1 passes W-null and fails W-vol and W-regime → **stopping rule 1: real-data trials paused**, synthetic iteration running |
+| 0d | Clean reference R0′ (Q1 fix + P = 40) | **done 2026-10-07**: 0.43 vs R0 0.44 (Δ −0.00), the new reference; see below |
+| 1 / 2 / 3 / 3w | V1 decision structure / V2 robust learning / V3 signal pack / weekly decisions | V1 implemented; its real-data run was **held back by stopping rule 1**. Synthetic iteration → candidate **V1b** (`config/v2/V1b.yaml`, includes V2's gated heads; LayerNorm did not help; HL-Gauss not implemented), awaiting owner decision. V3, 3w not started |
+| 4, Abl | Long-history pretraining or bootstrap (conditional); ablations | not started |
+| M6 | Live forward test | **deferred** (future work) |
+
 ---
 
 ## M1 — Baselines (2026-10-05)
@@ -243,6 +255,8 @@ N_trials = 16. **PBO over the 3 cross-asset configurations: 0.00.** The transfor
 5. **More data makes training more robust.** All cross-asset runs show late drift ≈ 0 and no collapses, and their best checkpoints come later (37–47 % of training vs ≈ 30 % single-asset).
 6. **For H1:** no configuration beats buy-and-hold net of costs on any evaluation set. The best deflated Sharpe is 0.69 (bar: 0.95).
 
+**Provenance note (added 2026-10-06): close-time leak in the ^GDAXI sleeve.** The residual features (`resid`, `resid_cum30`) of ^GDAXI subtract factor returns built from the US ETFs' *same-day* returns. Those settle at 16:00 New York time, 4.5 hours after the DAX close at which the decision is taken (PROTOCOL Part II §V2.3, Q1). This affects ^GDAXI in `m4_cross_resid`, `m4_cross_resid_transformer` and `m4_single_resid`; `m4_cross_base` (no residual features) and all baselines are unaffected. The numbers above stay as reported. No conclusion changes: the affected ^GDAXI results were weak (0.03–0.18), and ^GDAXI is 1 of 26 sleeves of the H1 set. The leak is fixed in v2 Step 0b, and v2 compares against the clean re-run R0′ (Step 0d). *Quantified in Step 0b:* the leaked feature had a timing IC of −0.15 with the next-day DAX return, yet the ^GDAXI sleeve of all three affected trials shows a timing IC of −0.007 to +0.007, the same as `m4_cross_base` without the feature (+0.010). The agents did not use the leak, so it did not inflate any number above.
+
 ---
 
 ## Secondary: neo-broker cost scenario (2026-10-05, owner request)
@@ -308,4 +322,134 @@ N_trials = 8. No deflated Sharpe reaches 0.95.
 
 - `nb_dqn_base` and `nb_dqn_k2` ran from a detached launcher (`experiments/runs/nb_launcher.sh`), so they survived the owner disconnecting VS Code.
 - Their code hashes were taken at run start over `harness/`, `rl/`, `functions.py` and `scrape_data.py`.
+
+---
+
+## v2 Step 0a — Re-scoring of the 16 trials (2026-10-06)
+
+No retraining and no new trial: every agent is measured through its stored exposures and its saved checkpoint. Full tables: [`experiments/reports/V2_0a_rescore.md`](experiments/reports/V2_0a_rescore.md); definitions: PROTOCOL Part II §V7 and §V12.1.
+
+**Check first:** re-running all 800 saved checkpoints through the shared data pipeline reproduces **100 %** of the stored exposures in every trial, so the refactored code is identical in v1 mode.
+
+Selected rows (median over 10 seeds × 5 folds, 10 bp + 1 bp; *timing* = gross − B&H, *cost* = net − gross, so net − B&H = timing + cost):
+
+| Strategy | Set | Net Sharpe | B&H | Timing | Cost | Timing IC | Switches / 100 bars | Δ lag-1 | Action-gap ratio |
+|---|---|---|---|---|---|---|---|---|---|
+| m3_vol_scaled_pnl (best single-asset reward) | ^GDAXI | 0.21 | 0.39 | +0.01 | −0.18 | 0.010 | 45.5 | +0.03 | 0.42 |
+| m4_single_resid | ^GDAXI | 0.09 | 0.39 | +0.01 | −0.31 | 0.007 | 52.3 | −0.01 | 0.52 |
+| m4_cross_base | 26 ETFs | 0.18 | 0.67 | −0.17 | −0.32 | 0.008 | 51.3 | −0.00 | 0.35 |
+| m4_cross_resid_transformer (R0) | 26 ETFs | 0.44 | 0.67 | −0.09 | −0.14 | −0.000 | 26.0 | +0.03 | 0.15 |
+| *vol_target* (new descriptive baseline) | ^GDAXI | 0.14 | 0.39 | −0.24 | −0.01 | −0.002 | 3.2 | +0.01 | – |
+| *vol_target* (new descriptive baseline) | 26 ETFs | 0.53 | 0.67 | −0.11 | −0.02 | −0.010 | 2.9 | −0.02 | – |
+
+### What this means
+
+1. **No timing skill in any trial.** The timing IC (rank correlation of exposure with the next day's vol-scaled return) lies between −0.001 and +0.016 for all 16 trials. For one sleeve over a 2-year block its sampling error is about ±0.045, so all of these are zero. The gap to buy-and-hold is mostly cost: for R0, −0.23 = −0.09 timing − 0.14 cost; for m4_cross_base, −0.49 = −0.17 − 0.32.
+2. **Execution realism is not the problem.** Executing one close later changes the agents' median net Sharpe by −0.05 to +0.06, and all 16 pass gate G-lag. Four of 12 baseline rows fail it: momentum, MACD and TSMOM-252 on ^GDAXI, and MACD on the 26 ETFs. With 5 deterministic folds, a one-day delay moves each fold's Sharpe by about 0.1, so these failures are partly noise.
+3. **Why the agents overtrade.** In every trial the gap between the best and second-best action is only 0.15–0.52 of the TD-error spread, so the choice between hold, buy and sell is decided by noise. Accordingly, 13 of 16 agents switch about every second day (42–52 switches per 100 bars). In the 14 rebuilt DQN trials other than R0, value estimates are optimistic by 1.1–3.5 SDs of the realised return (R0: 0.47; legacy: 8.8). This is the failure V1 (cost-structured head with an anchor) and V2 (robust value learning) target.
+4. **More training of the same kind would not help.** In every trial the median best checkpoint comes at 26–47 % of training, so for a typical run the second half did not improve on the first.
+5. **H3 preview: lower drawdowns come from holding less, not from timing.** Against exposure-matched buy-and-hold, no agent has the smaller drawdown in most seed–fold pairs (8–46 %). Only vol_target does (60–80 %).
+6. **Vol-targeting without leverage does not beat buy-and-hold here.** Its costs are negligible, but de-risking in high volatility lost return in these validation blocks (0.14 / 0.53 vs 0.39 / 0.67).
+
+## v2 Step 0b — Data audit and pipeline v2 (2026-10-06)
+
+Full report: [`DATA_AUDIT.md`](DATA_AUDIT.md) (generated by `scripts/audit_data.py`, development data only).
+
+| Item | Finding | Action |
+|---|---|---|
+| Information content | ρ̄ = 0.48 → **N_eff ≈ 2.0** independent assets (1.8 in stress). 6 drawdowns ≥ 15 % of the EW-26 portfolio; F1's training window sees 2, F5's sees 5 | none; motivates few trials and structure |
+| Luck level (MinBTL) | Best Sharpe expected from 16 zero-skill trials over the **9.70 validation years**: 0.58 (bound 0.76). The protocol's table used 16.25 years. Our trials are correlated, so the deflated Sharpe's hurdle from the trial log is 0.17 | §V12.1 item 16 |
+| Q1 close-time leak | corr(residₜ, next-day DAX return) = **−0.147** (SE 0.016) in v1, +0.027 after the fix. Trading it daily earns a gross Sharpe of 1.48, but 0.26 net (B&H 0.39) | **fixed** (pipeline v2) |
+| Q2 adjusted prices | Frozen data = fresh Yahoo download within 0.03 bp on all 34 series; the dividend adjustment checks out on the 5 spot-check tickers. The stooq second source failed (no access); owner decision: not repeated | none |
+| Q3 moves > 8σ | 12 moves, all genuine: 9 market-wide (gold crash 2013, Brexit, Volmageddon, March 2020, …) and 3 single-ticker that pass the bad-print checks | none (no masking) |
+| Q4 volume | ^GDAXI has 9 zero-volume bars | **masked** (pipeline v2) |
+| Q5 dates / stale bars | No duplicates, gaps, missing values, stale bars or forward-filled tradable bars | none |
+| Q6 point-in-time tests | 13 pass; full suite 104 passed | — |
+
+**Pipeline v2** (`rl/features_m4.py`, `pipeline: v2`, used by every v2 configuration) contains:
+- the Q1 lag of ^GDAXI's residual features;
+- the Q4 volume mask;
+- the warm-up rule of §V0 item 6 (availability flag `resid_avail`, 450 bars, z-score minimum 126 bars).
+
+v1 mode is unchanged, which the 100 % reproduction above confirms.
+
+### What this means
+
+1. **The data is clean.** The leak was the only real defect, and it is fixed. No re-download and no masking are needed.
+2. **The leak doubles as a positive control that the v1 agents failed.** Their input contained a feature with a timing IC of −0.15, but their ^GDAXI decisions show no trace of it (timing IC ≈ 0.01, the same as without the feature). Trading it daily would not have paid after costs. But the agents switch about every second day anyway, so aligning those trades with the signal would have cost nothing extra. This points at the value learning, not only at the inputs, and Step 0c tests it directly: synthetic worlds where the optimal policy is known.
+3. **Few independent events and a high luck level.** With about 2 effective assets, 5–6 drawdowns and a luck level near Sharpe 0.6 for the best of 16 trials, the trial budget (≤ 26) and the preference for structure over search are justified.
+
+## v2 Step 0d — Clean reference R0′ (2026-10-07)
+
+R0′ = R0 (`m4_cross_resid_transformer`) + pipeline v2 (Q1 close-time lag, Q4 volume mask, warm-up flag) + purge P = 40. It ran with 10 seeds × 5 folds and is trial 17. Full report: [`experiments/reports/V2_0d.md`](experiments/reports/V2_0d.md).
+
+| Median Sharpe @ 10 bp | R0′ | R0 (v1) | Buy-and-hold |
+|---|---|---|---|
+| **26 ETFs (H1 set)** | **0.43** (IQR 0.87) | 0.44 (0.86) | 0.67 |
+| R0′ − R0, paired over 50 seed–fold pairs | −0.00 (p = 0.33) | | |
+| ^GDAXI | 0.23 | 0.18 | 0.39 |
+| 7 leave-out ETFs | 0.28 | 0.32 | 0.53 |
+| SPY + EFA, neo-broker costs | 0.36 | 0.33 | 0.59 |
+| Timing IC / switches per 100 bars | 0.003 / 26.9 | −0.000 / 26.0 | |
+| Deflated Sharpe (N_trials = 17) / gate G-lag | 0.65 / pass (+0.00) | 0.67 / pass | |
+
+### What this means
+
+1. **The Q1 fix and the wider purge change nothing** (Δ −0.00). This confirms the audit: the v1 agents never used the leaked feature. R0′ is now the reference that V1 must beat (§V5).
+2. **R0′ fails the same way R0 did.** It trails buy-and-hold by 0.24 (−0.09 from timing, −0.15 from costs), and its action gaps are 0.15 of the TD noise.
+3. **The refactored code is behaviour-identical.** Re-running R0′'s saved checkpoints through the shared pipeline reproduces 100 % of its decisions.
+
+## v2 Step 0c — Synthetic positive controls (2026-10-07)
+
+Three synthetic 26-ticker worlds whose best policy is known (PROTOCOL Part II §V6.5, `harness/synthetic.py`).
+- Each run trains on one development-length path and is scored on an independent 20-year path.
+- There are 5 runs per world, at 10 bp + 1 bp.
+- These runs are not trials (`experiments/synthetic.csv`); full table: [`experiments/reports/V2_0c.md`](experiments/reports/V2_0c.md).
+- Calibration rule: with GARCH β = 0.90 the W-vol oracle gained only +0.08 Sharpe. β was raised to 0.91 (+0.19) and then frozen. W-regime passes with the specified parameters (+0.36).
+
+| Median over 5 runs | W-null: no timing exists | W-vol: de-risk in high vol | W-regime: de-risk in bear regimes |
+|---|---|---|---|
+| Buy-and-hold / oracle net Sharpe | 0.61 / 0.61 | 0.69 / **0.86** | 0.59 / **1.04** |
+| **R0′** net Sharpe (turnover/yr) | 0.51 (10.8): **fail** | 0.54 (11.4): **fail** | 0.42 (20.6): **fail** |
+| **V1** net Sharpe (turnover/yr) | 0.61 (0.1): **pass** | 0.64 (0.1): **fail** | 0.60 (0.2): **fail** |
+
+Pass criteria:
+- W-null: turnover ≤ 2/yr and Sharpe ≥ buy-and-hold − 0.05.
+- W-vol and W-regime: at least 50 % of the oracle's gain.
+
+### What this means
+
+1. **R0′ cannot learn timing even where it provably exists.** It also invents trades where none pay (W-null, 10.8 turns/yr). The v1 failure is therefore not only "no signal in real data". The learning machinery itself fails, as the action-gap and leak diagnostics of Steps 0a/0b suggested.
+2. **V1 fixes the overtrading but does not yet time.** It holds buy-and-hold in every world, with turnover ≤ 0.2/yr.
+   - A probe of its value head on the evaluation paths shows it **does learn the right direction**: U(100 %) − U(0 %) correlates with the oracle's exposure in 8 of 10 runs, at up to +0.38.
+   - But the learned differences are about 10× too small (0.1–0.26 vol units against a true bear-regime gap of ≈ 2–3), so the no-trade band never opens. Likely causes:
+     - the Huber loss (δ = 1 on TD errors ≈ 3) acts like median regression and shrinks small mean differences;
+     - one-step bootstrapping propagates regime value slowly.
+3. **Stopping rule 1 applied automatically** (00:58 in the queue). V1's real-data run did not start, N_trials stays 17, and the protocol now calls for iterating on synthetic data.
+4. **Synthetic iteration (2026-10-07, no trials).** Each variant is V1 with the change listed, run on 3 worlds × 5 runs; medians, net of costs:
+
+| V1 variant | W-null gain (turns/yr) | W-vol gain | W-regime gain (turns/yr) | Passes |
+|---|---|---|---|---|
+| V1 as specified | +0.00 (0.1) | −0.00 | +0.00 (0.2) | W-null |
+| + MSE loss | −0.00 (0.4) | −0.00 | −0.01 (2.4) | W-null |
+| + 20-step hold targets | −0.00 (0.1) | +0.00 | +0.05 (4.9) | W-null |
+| + MSE + 20-step | +0.00 (0.1) | −0.00 | +0.17 (12.4), gross +0.35 | W-null |
+| + no anchor (η = 0) | −0.01 (0.3) | −0.00 | +0.00 (1.9) | W-null |
+| + 10× learning rate | −0.00 (6.8) | +0.03 | +0.04 (4.1) | none |
+| **+ MSE + 20-step + 10 heads, gate z = 1** | **+0.00 (0.1)** | +0.00 | **+0.26 (4.7)** = 72 % of the oracle | **W-null, W-regime** |
+| same + LayerNorm | +0.00 (0.1) | +0.00 | +0.00 (4.4) | W-null |
+| + MSE + 20-step + mean-variance (auto λ) | −0.01 (1.1) | −0.00 | +0.14 (8.6) | W-null |
+| + MSE + 20-step + 10 heads, gate z = 2 | +0.00 (0.1) | +0.00 | +0.25 (3.9) | W-null, W-regime |
+| + MSE + 20-step + 10 heads + mean-variance, no anchor | −0.00 (0.1) | +0.00 | +0.00 (0.1) | W-null |
+| **robustness:** the z = 1 candidate on 5 new seeds (paths 1005–1009 / 2005–2009) | +0.00 (0.1) | −0.00 | +0.05 (3.5) of +0.46 | W-null |
+
+   - **Two changes make the value head learn timing.** MSE estimates mean value gaps that Huber (δ = 1 on TD errors ≈ 3) learns only slowly, and the 20-step "hold" targets propagate regime value 20× faster. Neither works alone.
+   - **The bootstrapped heads with the uncertainty gate keep the timing but drop the noise trades.** They cut turnover from 12.4 to 4.7/yr, and the net gain rises from +0.17 to +0.26.
+   - **W-vol fails everywhere, for a structural reason.** The anchor's hurdle (η = 0.01 per bar ≈ 0.16 annual Sharpe) is about as large as the entire W-vol oracle gain (+0.19), and a risk-neutral reward never prefers de-risking when the drift is always positive.
+   - **Per-run spread is large, and the pass is not robust.** On the pre-registered seeds 0–4, 3 of 5 W-regime runs gain +0.26 to +0.33. On 5 new seeds (5–9) the same candidate gains only +0.05 (11 % of the oracle's +0.46). Pooled over all 10 seeds it gains **+0.06 (16 % of the oracle)**. It is positive in 8 of 10 runs and never clearly negative, so it is **safe but weak**.
+   - **The noise trading in W-null is seed-specific.** The same 2 runs (seeds 0 and 2) trade noise under z = 1, z = 2 and mean-variance, while the other runs stay at buy-and-hold.
+   - **Timing capture depends on the training path.** A development-length path holds only ≈ 6 bear episodes, like the real data (§V2.1). The learner is short of regime *events*, not of rows. This points to Step 4 (long history, with more bear markets) and to the internal ensemble.
+   - **A stricter gate (z = 2)** changes little: +0.25 at 3.9 turns/yr.
+   - **The W-vol hypothesis is not confirmed.** A risk-aware reward without the anchor neither fixes W-vol nor keeps W-regime; behaviour becomes erratic (one W-vol run −0.35). W-vol timing (oracle +0.19) remains too weak a signal for the current learner.
+   - **Candidate:** `config/v2/V1b.yaml` (V1 + MSE + 20-step + 10 gated heads, z = 1). It formally satisfies stopping rule 1 on the pre-registered seeds 0–4, but the robustness check fails. Its real-data run (Step 1, +1 trial) **awaits the owner's decision** (§V12.1 item 21).
 

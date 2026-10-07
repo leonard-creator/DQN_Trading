@@ -97,8 +97,10 @@ def conv_transformer_encoder(market_in, net):
 
 
 def build_q_network(window, n_feat, pos_dim, n_actions, net):
+    """Market encoder (+ position vector, late fusion) -> hidden layers -> one output per action.
+    pos_dim = 0: market input only, as the V1 U-head needs (PROTOCOL Part II §V6.1)."""
     market_in = keras.Input(shape=(window, n_feat), name="market")
-    pos_in = keras.Input(shape=(pos_dim,), name="position")
+    pos_in = keras.Input(shape=(pos_dim,), name="position") if pos_dim else None
 
     arch = net.get("arch", "conv")
     if arch == "conv":
@@ -121,11 +123,14 @@ def build_q_network(window, n_feat, pos_dim, n_actions, net):
     else:
         raise ValueError(f"unknown arch '{arch}'")
 
-    h = layers.Concatenate()([x, pos_in])                     # late fusion
+    h = layers.Concatenate()([x, pos_in]) if pos_dim else x   # late fusion
     for units in net.get("hidden", [64, 32]):
-        h = layers.Dense(units, activation="relu")(h)
+        if net.get("layer_norm", False):                      # V2 (§V6.2): Dense -> LayerNorm -> ReLU
+            h = layers.Activation("relu")(layers.LayerNormalization()(layers.Dense(units)(h)))
+        else:
+            h = layers.Dense(units, activation="relu")(h)
     if net.get("dueling", False):
         q = DuelingCombine()([layers.Dense(1)(h), layers.Dense(n_actions)(h)])
     else:
         q = layers.Dense(n_actions)(h)
-    return keras.Model([market_in, pos_in], q)
+    return keras.Model([market_in, pos_in] if pos_dim else market_in, q)
