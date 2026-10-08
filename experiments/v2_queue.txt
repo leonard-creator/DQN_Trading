@@ -33,3 +33,26 @@ python -u scripts/run_agent.py --config config/v2/V1.yaml --synthetic --workers 
 python -u scripts/run_agent.py --config config/v2/V1.yaml --synthetic --workers 10 --set name=v2_V1_mse_n20_h10g2 agent.algo.loss=mse agent.algo.n_step=20 agent.algo.heads=10 agent.gate_z=2.0 > experiments/runs/v2_0c_V1_h10g2.log 2>&1
 # W-vol hypothesis: the anchor's hurdle (~0.16 Sharpe) eats the whole W-vol gain (+0.19); risk-aware reward without the anchor
 python -u scripts/run_agent.py --config config/v2/V1.yaml --synthetic --workers 10 --set name=v2_V1_mse_n20_h10g1_mv_eta0 agent.algo.loss=mse agent.algo.n_step=20 agent.algo.heads=10 agent.gate_z=1.0 agent.env.reward=mean_variance agent.env.mv_lambda=auto agent.anchor_eta=0.0 > experiments/runs/v2_0c_V1_mv_eta0.log 2>&1
+# --- 2026-10-07 08:55 owner approval: V1b on real data as Step 1 (+1 trial, N_trials 18), compared against R0' (§V8)
+python -u scripts/run_agent.py --config config/v2/V1b.yaml --workers 10 > experiments/runs/v2_V1b_train.log 2>&1
+python -u scripts/analyze_v2.py --step 1 --trials v2_V1b --reference v2_R0prime --workers 12 --threads 2 > experiments/runs/v2_1_report.log 2>&1
+# --- Step 4 (§V6.4; owner decision 2026-10-07: right after Step 1): V4 = V1b + long-history pretraining, compared against V1b
+# pretraining: 10 seeds once on the French long history 1926-2007 (no trial on its own); fine-tuning only if it finished (+1 trial, N_trials 19)
+python -u scripts/run_agent.py --config config/v2/V4.yaml --pretrain --workers 10 > experiments/runs/v2_V4_pretrain.log 2>&1
+test -f experiments/runs/pretrain/v2_V4/pretrain.json && python -u scripts/run_agent.py --config config/v2/V4.yaml --workers 10 > experiments/runs/v2_V4_train.log 2>&1
+python -u scripts/analyze_v2.py --step 4 --trials v2_V4 --reference v2_V1b --workers 12 --threads 2 > experiments/runs/v2_4_report.log 2>&1
+# --- Synthetic screen of the owner's ideas on top of V1b (no trials), all 10 seeds (0-4 = protocol, 5-9 = robustness):
+# 40-day hold targets (on real data this would need purge P = 60 -> protocol decision), 4x wider network (BBF-scale), both
+python -u scripts/run_agent.py --config config/v2/V1b.yaml --synthetic --workers 10 --seeds 0 1 2 3 4 5 6 7 8 9 --set name=v2_V1b_n40 agent.algo.n_step=40 > experiments/runs/v2_0c_V1b_n40.log 2>&1
+python -u scripts/run_agent.py --config config/v2/V1b.yaml --synthetic --workers 10 --seeds 0 1 2 3 4 5 6 7 8 9 --set name=v2_V1b_wide agent.network.transformer_dim=32 "agent.network.hidden=[256, 128]" > experiments/runs/v2_0c_V1b_wide.log 2>&1
+python -u scripts/run_agent.py --config config/v2/V1b.yaml --synthetic --workers 10 --seeds 0 1 2 3 4 5 6 7 8 9 --set name=v2_V1b_wide_n40 agent.algo.n_step=40 agent.network.transformer_dim=32 "agent.network.hidden=[256, 128]" > experiments/runs/v2_0c_V1b_wide_n40.log 2>&1
+# --- 2026-10-07 22:25, owner-approved (PROTOCOL Part II §V12.1 item 23, v2.0.6): hyperparameter search on the synthetic worlds (no trials), ~3.5 h
+python -u scripts/run_agent.py --config config/v2/V1b.yaml --hpo --workers 12 > experiments/runs/v2_hpo.log 2>&1
+# real-data configs of the best two settings and their neo-broker twins, written before any real-data run
+python -c "from harness import hpo; print(hpo.write_configs())"
+# the 4 real-data trials (N_trials 19 -> 23), chained by owner decision; each line runs only if both finalists score > 0 and use n <= 20
+python -c "from harness import hpo; import sys; sys.exit(0 if hpo.real_data_allowed() else 1)" && python -u scripts/run_agent.py --config config/v2/H1.yaml --workers 12 > experiments/runs/v2_H1_train.log 2>&1
+python -c "from harness import hpo; import sys; sys.exit(0 if hpo.real_data_allowed() else 1)" && python -u scripts/run_agent.py --config config/v2/H2.yaml --workers 12 > experiments/runs/v2_H2_train.log 2>&1
+python -c "from harness import hpo; import sys; sys.exit(0 if hpo.real_data_allowed() else 1)" && python -u scripts/run_agent.py --config config/v2/H1nb.yaml --workers 12 > experiments/runs/v2_H1nb_train.log 2>&1
+python -c "from harness import hpo; import sys; sys.exit(0 if hpo.real_data_allowed() else 1)" && python -u scripts/run_agent.py --config config/v2/H2nb.yaml --workers 12 > experiments/runs/v2_H2nb_train.log 2>&1
+python -c "from harness import hpo; import sys; sys.exit(0 if hpo.real_data_allowed() else 1)" && python -u scripts/analyze_v2.py --step H --trials v2_H1 v2_H2 v2_H1nb v2_H2nb --reference v2_V4 --workers 12 --threads 2 > experiments/runs/v2_H_report.log 2>&1

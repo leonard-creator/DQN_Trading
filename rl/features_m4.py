@@ -50,6 +50,8 @@ default, so every v1 trial keeps exactly its features:
     flag  resid_avail = 1 once both residual features have a valid z-score AND the
         ticker has `warmup_bars` (default 450) bars of history; before that both
         residual features are 0 (warm-up rule, §V0 item 6). Binary, not z-scored.
+    flag  vix_avail = 1 where both VIX features are known, else 0 and both are 0 (VIX
+        exists only from 1990; the long-history pretraining of Step 4, §V6.4).
     z   the trailing z-score needs `z_min_periods` = 126 bars (default for v2;
         expanding until the window is full). The window stays 252 bars as in M4.
 """
@@ -58,8 +60,9 @@ import numpy as np
 import pandas as pd
 
 M4_FEATURES = ["log_ret", "p_sma20", "p_sma50", "bb_pctb", "rsi14", "macd_hist", "vol_rel20",
-               "atr14_p", "sigma20", "vix_lag1", "vix_chg_lag1", "resid", "resid_cum30", "resid_avail"]
-FLAG_FEATURES = ("resid_avail",)          # binary availability flags: never z-scored
+               "atr14_p", "sigma20", "vix_lag1", "vix_chg_lag1", "resid", "resid_cum30", "resid_avail",
+               "vix_avail"]
+FLAG_FEATURES = ("resid_avail", "vix_avail")   # binary availability flags: never z-scored
 RESID_FEATURES = ("resid", "resid_cum30")
 VIX_FEATURES = ("vix_lag1", "vix_chg_lag1")
 
@@ -193,6 +196,8 @@ def m4_raw_frames(prices, tickers, features, factor_tickers, vix=None, params=No
         raise ValueError("VIX features requested but no ^VIX data given")
     if "resid_avail" in features and not all(f in features for f in RESID_FEATURES):
         raise ValueError("resid_avail needs both residual features")
+    if "vix_avail" in features and not all(f in features for f in VIX_FEATURES):
+        raise ValueError("vix_avail needs both VIX features")
     features = [f for f in features if f not in FLAG_FEATURES]       # flags are derived after z-scoring
     early = set(p["early_close_tickers"])
     resid = None
@@ -245,6 +250,10 @@ def build_m4_features(prices, tickers, features, factor_tickers, vix=None, param
             ok &= np.arange(len(z)) >= int(p["warmup_bars"])
             z.loc[~ok, list(RESID_FEATURES)] = np.nan
             z["resid_avail"] = ok.astype(float)
+        if "vix_avail" in features:
+            ok = z[list(VIX_FEATURES)].notna().all(axis=1)
+            z.loc[~ok, list(VIX_FEATURES)] = np.nan
+            z["vix_avail"] = ok.astype(float)
         x = z[list(features)].to_numpy(dtype=float)               # column order = config order
         out[t] = np.nan_to_num(x, nan=0.0).astype(np.float32)
     return out

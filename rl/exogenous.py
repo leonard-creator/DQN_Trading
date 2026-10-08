@@ -33,24 +33,53 @@ gain only if mean_k[dQ] > gate_z * sd_k[dQ], dQ = Q_k(e') - Q_k(p); otherwise st
 
 This is the env's vol_scaled_pnl reward split by exposure. eta, the lazy anchor (training
 reward only), charges every bar away from full exposure, so a deviation must be expected to
-beat holding; the output biases start at the buy-and-hold value of each exposure. The greedy
+beat holding; the output biases start at the buy-and-hold value of each exposure (agent.prior:
+none starts them at 0 instead). The greedy
 policy trades only if U(e') - U(p) exceeds the cost: a no-trade band (Garleanu & Pedersen
 2013). No environment loop and no epsilon: the data set is the training range itself.
+With agent.pretrain (Step 4, §V6.4) training starts from the seed's long-history checkpoint
+(harness/longhistory.py) instead of the buy-and-hold prior: fine-tuning.
 Same interface and outputs as rl.trainer.train_run, so checkpoint selection, saving,
 exposures and the harness are unchanged.
+
+Learner options for the hyperparameter search (PROTOCOL Part II §V12.1 item 23), all off by default:
+  algo.loss: hl_gauss    each U value is a softmax over `bins` (51) value bins, U = sum p * bin centre,
+                         trained by cross-entropy against the HL-Gauss target: N(y, sigma^2) with
+                         sigma = 0.75 bin width, integrated over each bin (Farebrother et al. 2024).
+                         Support: the buy-and-hold value of each exposure +- 6 SD of the immediate
+                         term, from the training samples; stored in info.json ("hl_support").
+  algo.prior_scale beta  a frozen random prior network: out = base(m) + beta prior(m), per head
+                         a different fixed function, so the heads keep disagreeing where the data
+                         say nothing (randomized prior functions, Osband et al. 2018). The prior is
+                         part of the saved weights.
+  algo.weight_decay      AdamW instead of Adam (decoupled weight decay, as in BBF).
 """
 
+import json
+import os
 import time
 
 import numpy as np
 import pandas as pd
 import tensorflow as tf
 from tensorflow import keras
+from tensorflow.keras import layers
 
 from harness import backtest as bt
+from harness.config import repo_path
 from rl.agent import make_schedule
 from rl.networks import build_q_network
 from rl.trainer import score_ranges
+
+LOSSES = ("huber", "mse", "hl_gauss")
+
+
+def hl_probs(y, edges, sigma):
+    """HL-Gauss target: the mass of N(y, sigma^2), truncated to [edges[0], edges[-1]], in each bin.
+    y (...) -> (..., bins); y is clipped to the support first, so far-out targets stay finite."""
+    y = tf.clip_by_value(y, edges[0], edges[-1])
+    cdf = tf.math.erf((edges - y[..., None]) / (np.sqrt(2.0) * sigma))
+    return (cdf[..., 1:] - cdf[..., :-1]) / (cdf[..., -1:] - cdf[..., :1])
 
 
 def cost_arrays(data, costs):
@@ -75,33 +104,68 @@ def decide(u, p, grid, kappa, phi, z=0.0):
 
 
 class UAgent:
-    """Online and target U networks (market input only): `heads` x one output per target exposure."""
+    """Online and target U networks (market input only): `heads` x one output per target exposure
+    (x `bins` logits with the HL-Gauss loss). `support` = (low, high) of the HL-Gauss value bins."""
 
-    def __init__(self, window, n_feat, levels, net_cfg, algo, total_updates, bias=None, discount=None):
+    def __init__(self, window, n_feat, levels, net_cfg, algo, total_updates, bias=None, discount=None,
+                 support=None):
         self.grid = np.arange(levels + 1) / levels
         self.heads, E = int(algo.get("heads", 1)), levels + 1
-        self.online = build_q_network(window, n_feat, 0, self.heads * E, net_cfg)
-        self.target = build_q_network(window, n_feat, 0, self.heads * E, net_cfg)
-        if bias is not None:
-            kernel = self.online.layers[-1].get_weights()[0]
-            self.online.layers[-1].set_weights([kernel, np.tile(np.asarray(bias, np.float32), self.heads)])
-        self.target.set_weights(self.online.get_weights())
+        loss = algo.get("loss", "huber")
+        if loss not in LOSSES:
+            raise ValueError(f"algo.loss must be one of {LOSSES}, not '{loss}'")
+        self.bins = int(algo.get("bins", 51)) if loss == "hl_gauss" else 1
+        if self.bins > 1:
+            if support is None:
+                raise ValueError("hl_gauss needs the value support (computed by train_exogenous)")
+            self.edges = tf.constant(np.linspace(support[0], support[1], self.bins + 1), tf.float32)
+            self.centres = (self.edges[1:] + self.edges[:-1]) / 2.0
+            self.sigma = 0.75 * (support[1] - support[0]) / self.bins          # Farebrother et al.: 0.75 bin
+        beta = float(algo.get("prior_scale", 0.0))
+        self.online, base = self._network(window, n_feat, self.heads * E * self.bins, net_cfg, beta)
+        self.target, _ = self._network(window, n_feat, self.heads * E * self.bins, net_cfg, beta)
+        if bias is not None:                     # buy-and-hold prior on the trainable output layer
+            out = np.asarray(bias, np.float32)
+            if self.bins > 1:                    # logits whose expectation is the prior value
+                out = np.log(hl_probs(tf.constant(out), self.edges, self.sigma).numpy() + 1e-6).ravel()
+            kernel = base.layers[-1].get_weights()[0]
+            base.layers[-1].set_weights([kernel, np.tile(out, self.heads)])
+        self.target.set_weights(self.online.get_weights())                  # incl. the frozen prior
         self.gamma, self.tau = float(algo["gamma"]), float(algo.get("tau", 0.005))
         self.discount = self.gamma if discount is None else float(discount)   # gamma^n for n-step targets
-        self.delta = float(algo.get("huber_delta", 1.0)) if algo.get("loss", "huber") == "huber" else None
+        self.delta = float(algo.get("huber_delta", 1.0)) if loss == "huber" else None
         self.schedule = make_schedule(algo, total_updates)
-        clip = algo.get("grad_clip_norm")
-        self.opt = keras.optimizers.Adam(learning_rate=self.schedule,
-                                         **({"global_clipnorm": float(clip)} if clip else {}))
+        clip, wd = algo.get("grad_clip_norm"), float(algo.get("weight_decay", 0.0))
+        kw = {"global_clipnorm": float(clip)} if clip else {}
+        self.opt = (keras.optimizers.AdamW(learning_rate=self.schedule, weight_decay=wd, **kw) if wd
+                    else keras.optimizers.Adam(learning_rate=self.schedule, **kw))
         grid = tf.constant(self.grid, tf.float32)
         self.dist = tf.abs(grid[None, :] - grid[:, None])          # [e', e''] = |e'' - e'|
         self.move = tf.cast(self.dist > 0, tf.float32)              # [e', e''] = 1[e'' != e']
         self.updates = 0
         self._step = tf.function(self._train_step, reduce_retracing=True)
-        self._u = tf.function(lambda m: self._split(self.online(m, training=False)), reduce_retracing=True)
+        self._u = tf.function(lambda m: self._values(self.online(m, training=False)), reduce_retracing=True)
 
-    def _split(self, out):
-        return tf.reshape(out, (-1, self.heads, len(self.grid)))            # (B, heads, E)
+    @staticmethod
+    def _network(window, n_feat, n_out, net, beta):
+        """(model, its trainable part). beta > 0: model(m) = base(m) + beta prior(m) with a frozen,
+        randomly initialised prior network of the same shape (Osband et al. 2018)."""
+        base = build_q_network(window, n_feat, 0, n_out, net)
+        if not beta:
+            return base, base
+        prior = build_q_network(window, n_feat, 0, n_out, net)
+        prior.trainable = False
+        m = keras.Input(shape=(window, n_feat))
+        return keras.Model(m, layers.Add()([base(m), layers.Rescaling(beta)(prior(m))])), base
+
+    def _logits(self, out):
+        return tf.reshape(out, (-1, self.heads, len(self.grid), self.bins))  # (B, heads, E, bins)
+
+    def _values(self, out):
+        """U (B, heads, E) from the network output; with HL-Gauss the expectation over the bins."""
+        if self.bins == 1:
+            return tf.reshape(out, (-1, self.heads, len(self.grid)))
+        return tf.reduce_sum(tf.nn.softmax(self._logits(out)) * self.centres, axis=-1)
 
     def u_values(self, market):
         """(B, E) for one head, (B, heads, E) for several."""
@@ -116,7 +180,7 @@ class UAgent:
         """y (B, heads, E) from the immediate terms rew (B, E) and next-bar cost factors kappa2, phi2 (B,).
         Each head picks e* with its online head and is evaluated by its own target head."""
         cost = (kappa2[:, None, None] * self.dist + phi2[:, None, None] * self.move)[:, None]   # (B, 1, e', e'')
-        u_on, u_tg = self._split(self.online(m2, training=False)), self._split(self.target(m2, training=False))
+        u_on, u_tg = self._values(self.online(m2, training=False)), self._values(self.target(m2, training=False))
         best = tf.argmax(u_on[:, :, None, :] - cost, axis=3, output_type=tf.int32)            # (B, heads, e')
         cost = tf.broadcast_to(cost, tf.concat([tf.shape(best), [len(self.grid)]], 0))
         nxt = tf.gather(u_tg, best, batch_dims=2) - tf.gather(cost, best, batch_dims=3)
@@ -125,9 +189,13 @@ class UAgent:
     def _train_step(self, m, rew, m2, kappa2, phi2, mask):
         y = tf.stop_gradient(self.targets(rew, m2, kappa2, phi2))
         with tf.GradientTape() as tape:
-            u = self._split(self.online(m, training=True))
+            out = self.online(m, training=True)
+            u = self._values(out)
             td = y - u                                                # all heads and exposures at once
-            if self.delta is None:
+            if self.bins > 1:                                         # HL-Gauss: cross-entropy per value
+                err = -tf.reduce_sum(hl_probs(y, self.edges, self.sigma) * tf.nn.log_softmax(self._logits(out)),
+                                     axis=-1)
+            elif self.delta is None:
                 err = tf.square(td)
             else:
                 a = tf.abs(td)
@@ -137,7 +205,8 @@ class UAgent:
             loss = tf.reduce_sum(w * err) / tf.maximum(1.0, tf.reduce_sum(w) * len(self.grid))
         grads = tape.gradient(loss, self.online.trainable_variables)
         self.opt.apply_gradients(zip(grads, self.online.trainable_variables))
-        for t_var, o_var in zip(self.target.weights, self.online.weights):
+        # soft target update of the learnt weights; a frozen prior stays bit-identical in both networks
+        for t_var, o_var in zip(self.target.trainable_weights, self.online.trainable_weights):
             t_var.assign(self.tau * o_var + (1.0 - self.tau) * t_var)
         return td, loss, tf.reduce_mean(u)
 
@@ -195,7 +264,25 @@ def train_exogenous(cfg, data, train_ranges, select_ranges, seed, costs, logger=
 
     # prior: U(e') = value of holding e' forever at the average training reward (anchor included)
     bias = (grid * z(G).mean() - 0.5 * lam * grid ** 2 * (z(G) ** 2).mean() - eta * (grid != 1.0)) / (1.0 - gamma)
-    agent = UAgent(data.window, data.n_feat, levels, a["network"], algo, total, bias, discount=gamma ** n)
+    prior = a.get("prior", "buy_and_hold")
+    if prior not in ("buy_and_hold", "none"):
+        raise ValueError(f"agent.prior must be 'buy_and_hold' or 'none', not '{prior}'")
+    pre = a.get("pretrain")
+    weights = os.path.join(repo_path(pre["dir"]), "agent", f"PRE_s{seed}", "best.weights.h5") if pre else None
+    support = None
+    if algo.get("loss") == "hl_gauss":
+        if pre:                                   # the value bins must be the pretrained network's
+            with open(os.path.join(os.path.dirname(weights), "info.json")) as fh:
+                support = json.load(fh)["hl_support"]
+        else:                                     # each exposure's hold value +- 6 SD of its immediate term
+            imm = immediate(np.arange(len(G)))
+            v, sd = imm.mean(axis=0) / (1.0 - gamma ** n), imm.std(axis=0).max()
+            support = [float(v.min() - 6 * sd), float(v.max() + 6 * sd)]
+    agent = UAgent(data.window, data.n_feat, levels, a["network"], algo, total,
+                   None if pre or prior == "none" else bias, discount=gamma ** n, support=support)
+    if pre:                                       # one long-history checkpoint per seed serves all folds
+        agent.online.load_weights(weights)
+        agent.target.set_weights(agent.online.get_weights())
     rng = np.random.default_rng(seed + 10_000)
     z_gate = float(a.get("gate_z", 0.0))
     masks = (rng.random((len(G), agent.heads)) < 0.5).astype(np.float32) if agent.heads > 1 else None
@@ -238,5 +325,5 @@ def train_exogenous(cfg, data, train_ranges, select_ranges, seed, costs, logger=
     info = {"best_update": best["update"], "best_inner_sharpe": float(best["sharpe"]),
             "last_inner_sharpe": float(curve[-1]["inner_sharpe"]), "updates": agent.updates,
             "transitions": total * batch, "seconds": time.time() - t0, "select": tr.get("select", "best_inner_val"),
-            "samples": int(len(G)), "mv_lambda": lam}
+            "samples": int(len(G)), "mv_lambda": lam, "pretrained": weights, "hl_support": support}
     return agent, info, pd.DataFrame(curve), last_weights

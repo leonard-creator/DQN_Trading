@@ -6,7 +6,7 @@ The research question: *does the agent beat simple baselines net of costs, over 
 
 > Research code only. No live trading, not investment advice.
 
-## Project status (2026-10-06)
+## Project status (2026-10-07)
 
 **M1–M4 are done; the v2 programme is approved and frozen** ([`PROTOCOL.md`](PROTOCOL.md) Part II). 16 of 50 trials are used; the test period is untouched.
 - **v1 result:** no agent beats buy-and-hold net of costs. Best on the 26-ETF H1 set: the conv-transformer at a median Sharpe of 0.44 vs 0.67. There is no timing skill even before costs.
@@ -19,13 +19,17 @@ The research question: *does the agent beat simple baselines net of costs, over 
 - **v2 Step 0c done (2026-10-07):**
   - R0′ fails all three synthetic worlds. V1 stops the overtrading but does not time, so **stopping rule 1 paused real-data trials**.
   - The synthetic iteration found **V1b** = V1 + MSE + 20-step targets + 10 gated heads. It passes W-null and W-regime on the pre-registered seeds (+0.26 Sharpe, 72 % of the oracle). On 5 new seeds it gains only +0.05; pooled over 10 seeds it gains +0.06 (16 %), so it is safe but weak.
-- **Next (owner decision):** run V1b on real data as Step 1 (`config/v2/V1b.yaml`, +1 trial), or first strengthen it on synthetic data (more regime events: Step 4 long history; larger ensembles). The queue is idle; all results are in `experiments/reports/V2_0c.md`.
+- **v2 Step 1 done (2026-10-07):** V1b is adopted over R0′ (0.64 vs 0.43, +0.12, p < 0.001). It has stopped the noise trading, but on real data it is ≈ buy-and-hold (0.67): 97 % invested, no timing.
+- **v2 Step 4 done (2026-10-07):** V4 (V1b + 81-year pretraining) scores 0.67 = buy-and-hold. It is adopted, because its seed spread fell by 91 %, but it shows no timing. N_trials is now 19 of 26.
+- **Synthetic screen of the owner's ideas (2026-10-07, no trials):** 40-day targets change nothing measurable. A 4× wider network learns twice the gross timing but trades noise (W-null −0.13), so width needs regularisation.
+- **Next (owner-approved plan):** a hyperparameter search on synthetic worlds only, including a new 1–4-week swing world, then the best two settings on real data as 4 trials.
 - Details: [`RESULTS.md`](RESULTS.md), plan summary in [`docs/03_extracted_plan.md`](docs/03_extracted_plan.md) §8.
 
 | Document | What it is |
 |---|---|
 | [`PROTOCOL.md`](PROTOCOL.md) | Pre-registration (approved): hypothesis H1, universe, splits, trial budget, costs, statistics |
 | [`RESULTS.md`](RESULTS.md) | Results per milestone (M1–M4) and per v2 step |
+| [`EXPLANATIONS.md`](EXPLANATIONS.md) | The key experiments and design decisions in plain words, with examples (kept up to date) |
 | [`DATA_AUDIT.md`](DATA_AUDIT.md) | v2 Step 0b data audit: effective sample size, drawdown events, luck level, data-quality checks Q1–Q6 |
 | [`docs/03_extracted_plan.md`](docs/03_extracted_plan.md) | The authoritative plan: weaknesses W1–W15, evaluation protocol, phases A–F |
 | [`docs/02_claude_code_prompt.md`](docs/02_claude_code_prompt.md) | Engineering brief derived from the plan (milestones M1–M5, definition of done) |
@@ -144,6 +148,78 @@ These plots come from the original agent. They were made with one seed, no basel
 ## Change report
 
 Newest entry first. Each entry says what changed, why, and what was verified.
+
+### 2026-10-07 (evening) — screen results, hyperparameter-search tooling, world W-swing (PROTOCOL v2.0.6)
+
+**Owner decisions (2026-10-07):**
+- start the approved hyperparameter-search plan (HANDOVER §4);
+- H1/H2 train at the protocol's 10 + 1 bp;
+- the purge a 40-day winner would need on real data (P = 60) is decided only if one wins;
+- item 23 approved (22:20): queue the search now and chain the 4 real-data trials after it, guarded (both finalists must have a final score > 0 and n ≤ 20, otherwise they pause).
+
+**Queued (detached, 22:19):** the search, `write_configs()`, the 4 guarded trials H1, H2, H1nb and H2nb, and the step-H report against V4.
+
+**Results:** the synthetic screen of the owner's ideas (no trials; RESULTS.md, new section). 40-day targets ≈ V1b. A 4× wider network has twice the gross timing but trades noise (W-null −0.13 at 8.7 turns/yr).
+
+**Added**
+- `harness/hpo.py` + `scripts/run_agent.py --hpo`: the search of PROTOCOL §V12.1 item 23.
+  - A balanced design of 32 settings, then successive halving 32 → 8 → 2.
+  - Score: the mean share of the oracle's gain in W-swing and W-regime, −1 for noise trading in W-null.
+  - Results in `experiments/reports/v2_hpo/` and `V2_hpo.md`; a finished round is re-used on restart.
+  - `write_configs()` writes the real-data configs `config/v2/H1.yaml`, `H2.yaml`, `H1nb.yaml` and `H2nb.yaml` from the final round's best two, before any real-data run.
+  - `real_data_allowed()` is the queue guard of the chained trials.
+- `harness/synthetic.py`:
+  - **world W-swing**: per-ticker AR(1) drifts with a 10-day half-life and a Kalman-filter oracle with a cost band. Calibrated by a rule fixed beforehand to a drift SD of 1.5·10⁻³: the oracle gains +0.32 at 5 bp and trades 17 times a year.
+  - `run_many()`: several configurations in one training pool, with paths and features built once per (world, seed); `run()` is now a wrapper.
+  - `calibrate(worlds=…)` also reports the oracle's turnover; the 0c report shows the number of runs per row.
+- `rl/exogenous.py` (all off by default, so V1/V1b/V4 are unchanged):
+  - `algo.loss: hl_gauss`: 51 bins, σ = 0.75 bin width, support from the training samples, stored in `info.json` and used by `rl/diagnostics.py`;
+  - `algo.prior_scale`: a frozen random prior network added to the output, saved with the weights;
+  - `algo.weight_decay`: AdamW;
+  - `agent.prior: none`: no buy-and-hold bias start;
+  - an unknown loss name now raises an error instead of silently meaning MSE.
+- `rl/policy.py`: `cost_function(cfg)` with the option `agent.env.cost_positions`, which sizes the fixed fee to the deployment account. It is used in training, in the decision band and in the diagnostics.
+- Tests: 13 new tests in `tests/test_exogenous.py`, `test_synthetic.py` and `test_costs.py`. The suite has **132 passed**.
+
+**Changed**
+- `rl/exogenous.py`: the soft target update runs over the trainable weights only, so a frozen prior stays bit-identical in both networks (found by the new test). Every existing network has no non-trainable weights, so the list and its order are unchanged and earlier runs are unaffected (checked for R0′ and V1b).
+- `PROTOCOL.md` v2.0.6 (§V12.1 item 23); `RESULTS.md` (screen section); `EXPLANATIONS.md` (two entries); `HANDOVER.md` (queue and git state); `docs/CODEBASE_NOTES.md` (code map).
+
+**Verified**
+- Full suite: 132 passed (CPU).
+- W-swing calibration grid through the harness (oracle vs buy-and-hold only): +0.04 / +0.14 / **+0.32** / +0.54 / +0.80 for drift SD 1.0 / 1.25 / **1.5** / 1.75 / 2.0·10⁻³.
+- GPU timing check of the heaviest and lightest search settings at ¼ budget (synthetic, not logged; only the durations were read): 110 s and 86 s per job with one job per GPU. The full search is about 3.5 h with 12 workers.
+- No trial added (N_trials 19). The test period is untouched; no network access.
+
+### 2026-10-07 (morning) — V1b on real data, Step 4 implemented, literature ideas, EXPLANATIONS.md
+
+**Owner decisions:**
+- V1b goes to real data as Step 1.
+- Step 4 runs next.
+- A hyperparameter-optimisation plan comes after both.
+- The owner's ideas (40-day targets, bigger networks) are screened on synthetic data first.
+
+**Added**
+- `EXPLANATIONS.md`: plain-language explanations of the crucial experiments and decisions, including why Huber was the default.
+- `harness/longhistory.py` + `config/v2/V4.yaml` + `scripts/run_agent.py --pretrain`: Step 4.
+  - Pretraining on 81 years of French industry and market returns (1926–2007).
+  - Fine-tuning on every ETF fold from the seed's checkpoint, with half the budget.
+- `rl/features_m4.py`: the `vix_avail` flag (VIX is masked before 1990).
+- `docs/evidence-dqn-trading.md`: 7 new sources (BBF details, SimBa, HL-Gauss details, randomized priors, n-step returns, X-Trend, DQN error clipping).
+- Tests: 3 new tests in existing files. The suite has **119 passed**.
+
+**Changed**
+- `harness/synthetic.py`: the shared helpers `ohlcv` / `repoint`, also used by the long history.
+- `PROTOCOL.md` v2.0.4 (owner decisions) and v2.0.5 (§V12.1 item 22, Step 4 details, written before its run).
+
+**Queued (detached):**
+1. V1b training (Step 1, trial 18) and its report.
+2. Step 4: pretraining, then the guarded fine-tuning run (trial 19) and its report.
+3. The synthetic screen of 40-day targets and a 4× wider network.
+
+**Verified:**
+- Pretraining and fine-tuning smoke runs on the real data (CPU, small budgets). Weights load across the two phases.
+- The loader cuts the window.
 
 ### 2026-10-07 — v2 Step 0d (R0′), Step 0c and V1 implemented, detached queue, shared report code
 

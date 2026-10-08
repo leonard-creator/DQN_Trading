@@ -1,0 +1,24 @@
+# PROTOCOL Part II §V12.1 item 23: rank 2 of the synthetic hyperparameter search (id c25, round-3 score -0.36),
+# written by harness/hpo.write_configs before any real-data run of it. +1 trial.
+inherit: config/v2/V1b.yaml
+name: v2_H2
+agent:
+  anchor_eta: 0.0
+  prior: none
+  gate_z: 1.0
+  network:
+    transformer_dim: 32
+    hidden:
+    - 256
+    - 128
+  algo:
+    loss: hl_gauss
+    n_step: 5
+    gamma: 0.99
+    weight_decay: 0.1
+    heads: 20
+    prior_scale: 3.0
+    lr: 0.0001
+  train:
+    transitions: 100000
+    eval_every_updates: 5000

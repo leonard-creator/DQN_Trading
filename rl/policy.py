@@ -133,7 +133,6 @@ def build_job_data(job):
     cost_of(ticker, n_positions), K, short.
     """
     from rl.features import ex_ante_vol, ticker_features, vol_scale
-    from harness import backtest as bt
 
     cfg, folds = job["cfg"], job["folds"]
     a, ev = cfg["agent"], cfg["evaluation"]
@@ -162,21 +161,28 @@ def build_job_data(job):
         sigmas.append(ex_ante_vol(df["Close"].to_numpy(), vol_span, r.train_start_pos, r.inner_train_end_pos))
         dates.append(df.index)
 
-    # Costs the agent trains under: the PROTOCOL level, or a named scenario
-    # (e.g. neo_broker: EUR 1 per transaction, spread, TER). With a scenario, the
-    # capital is shared by all training tickers, so each sleeve holds C / N.
-    bpy = cfg["data"]["bars_per_year"]
-    scen_name = a["env"].get("cost_scenario")
-    if scen_name:
-        scen = bt.load_scenarios()[scen_name]
-        cost_of = lambda t, n: bt.scenario_cost(scen, t, n, bpy)          # noqa: E731
-    else:
-        rate = bt.cost_rate(ev["costs"]["primary_bps"], ev["costs"]["half_spread_bps"])
-        cost_of = lambda t, n: rate                                       # noqa: E731
     K, short = a["env"].get("levels", ev["position_levels"]), ev["allow_short"]
     return {"W": W, "P": P, "inner": inner, "tickers": tickers, "train_t": train_t, "eval_t": eval_t,
             "closes": closes, "feats": feats, "vols": vols, "dates": dates, "sigmas": sigmas, "fr": fr,
-            "cost_of": cost_of, "K": K, "short": short}
+            "cost_of": cost_function(cfg), "K": K, "short": short}
+
+
+def cost_function(cfg):
+    """cost_of(ticker, n_positions): the costs the agent trains and decides under.
+
+    The PROTOCOL level, or a named scenario (e.g. neo_broker: EUR 1 per transaction, spread,
+    TER). With a scenario the capital is shared by n_positions sleeves (C / N each), so the
+    fixed fee is a share of one sleeve. agent.env.cost_positions fixes that count to the
+    deployment account instead (e.g. 2 x EUR 5,000 -> EUR 1 = 2 bp), not the number of sleeves.
+    """
+    from harness import backtest as bt
+    a, ev = cfg["agent"], cfg["evaluation"]
+    scen_name = a["env"].get("cost_scenario")
+    if scen_name:
+        scen, n_pos, bpy = bt.load_scenarios()[scen_name], a["env"].get("cost_positions"), cfg["data"]["bars_per_year"]
+        return lambda t, n: bt.scenario_cost(scen, t, n_pos or n, bpy)
+    rate = bt.cost_rate(ev["costs"]["primary_bps"], ev["costs"]["half_spread_bps"])
+    return lambda t, n: rate
 
 
 def eval_market(jd, eval_t):

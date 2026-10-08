@@ -106,7 +106,8 @@ def job_q_diagnostics(args):
     if a.get("replay", {}).get("mode", "agent") == "exogenous":
         from rl.exogenous import UAgent
         levels = a["env"].get("levels", cfg["evaluation"]["position_levels"])
-        agent = UAgent(jd["W"], sub.n_feat, levels, a["network"], a["algo"], total_updates=1)
+        agent = UAgent(jd["W"], sub.n_feat, levels, a["network"], a["algo"], total_updates=1,
+                       support=info.get("hl_support"))                   # HL-Gauss value bins of the run
         agent.online.load_weights(os.path.join(job_dir, "best.weights.h5"))
         sleeves, flat = _rollout_band(agent, sub, ranges, a, costs, float(info.get("mv_lambda", 0.0)))
     else:

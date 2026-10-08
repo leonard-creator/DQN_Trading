@@ -1,0 +1,8 @@
+# PROTOCOL Part II §V12.1 item 23: rank 2 of the synthetic hyperparameter search (id c25, round-3 score -0.36),
+# written by harness/hpo.write_configs before any real-data run of it. +1 trial.
+inherit: config/v2/H2.yaml
+name: v2_H2nb
+agent:
+  env:
+    cost_scenario: neo_broker
+    cost_positions: 2

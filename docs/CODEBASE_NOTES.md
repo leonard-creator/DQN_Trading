@@ -229,3 +229,23 @@ What each v2 component touches in the **current** code (state after M4, commit w
 
 **Shared report code (2026-10-07).** `harness/report.py` holds the report helpers used by every report script (latest trial, median (IQR) tables, fold and cost tables, paired test, deploy baselines, stability rows). `harness/diagnostics.py` holds the §V7 scoring of one strategy (`strategy_scores`) and of one agent trial (`agent_scores`). `scripts/analyze_v2.py` is the generic report for every v2 step (`--step`, `--trials`, `--reference`, §V8 adoption rule). Regenerating the M2/M3/M4/cost and 0a reports with the shared code gave identical tables; the only differences were the deflated Sharpe values, because N_trials has grown since those reports were written.
 
+**Step 4, long-history pretraining (2026-10-07).**
+- `harness/longhistory.py` parses the French CSVs (`french_table`) and builds the 6-series price dict inside the window (`load`). Rows after 2007-06-29 are never returned.
+- `harness/longhistory.run` pretrains a configuration once per seed into `agent.pretrain.dir`, reusing `rl/policy.make_jobs` + `train_jobs` and the synthetic helpers `ohlcv` / `repoint`.
+- `rl/exogenous.train_exogenous` loads `<dir>/agent/PRE_s<seed>/best.weights.h5` when `agent.pretrain` is set.
+- `rl/features_m4.py` has a second availability flag, `vix_avail`.
+- Entry point: `scripts/run_agent.py --pretrain`.
+
+
+**Hyperparameter search (2026-10-07, PROTOCOL Part II §V12.1 item 23).**
+- `harness/hpo.py`: the search on the synthetic worlds (never a trial).
+  - `sample` draws a balanced random design over `SPACE`; `overrides` scales the budget (about 5 checkpoints per run); `score` gives the mean oracle capture in W-swing and W-regime minus the W-null penalty.
+  - `run` does the successive halving with one CSV per round in `experiments/reports/v2_hpo/` (a finished round is re-used on restart); `write_report` writes `experiments/reports/V2_hpo.md`.
+  - `write_configs` writes `config/v2/H1.yaml`, `H2.yaml` and their neo-broker twins `H1nb.yaml`, `H2nb.yaml` from the last round's best two.
+  - Entry point: `scripts/run_agent.py --config config/v2/V1b.yaml --hpo`.
+- `harness/synthetic.py`:
+  - world W-swing (`SWING`, `simulate`, the per-ticker Kalman oracle `kalman_target`); oracles are now (bars × tickers);
+  - `run_many()` trains several configurations in one `train_jobs` pool, with paths and features built once per (world, seed); `run()` wraps it;
+  - `calibrate(worlds=…)` also returns the oracle's turnover.
+- `rl/exogenous.py`: `hl_probs` + `UAgent(support=…)` (HL-Gauss, support stored in `info.json` as `hl_support`), `UAgent._network` (frozen random prior added to the output), AdamW (`algo.weight_decay`), `agent.prior: none`.
+- `rl/policy.cost_function(cfg)`: the costs an agent trains and decides under, including `agent.env.cost_positions`.

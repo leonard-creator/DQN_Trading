@@ -34,3 +34,4 @@ experiments/reports/*.log
 experiments/v2_queue.log
 experiments/v2_queue.pos
 experiments/v2_queue.lock
+.dev_v2/

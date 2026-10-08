@@ -21,8 +21,9 @@ Results under [`PROTOCOL.md`](PROTOCOL.md) (v1.2), one section per milestone. Ev
 | 0b | Data audit + Q1 leak fix (`DATA_AUDIT.md`) | **done 2026-10-06**: data clean; Q1 leak quantified and fixed (pipeline v2); see below |
 | 0c | Synthetic positive controls (W-null, W-vol, W-regime) | **done 2026-10-07**: R0′ fails all 3 worlds; V1 passes W-null and fails W-vol and W-regime → **stopping rule 1: real-data trials paused**, synthetic iteration running |
 | 0d | Clean reference R0′ (Q1 fix + P = 40) | **done 2026-10-07**: 0.43 vs R0 0.44 (Δ −0.00), the new reference; see below |
-| 1 / 2 / 3 / 3w | V1 decision structure / V2 robust learning / V3 signal pack / weekly decisions | V1 implemented; its real-data run was **held back by stopping rule 1**. Synthetic iteration → candidate **V1b** (`config/v2/V1b.yaml`, includes V2's gated heads; LayerNorm did not help; HL-Gauss not implemented), awaiting owner decision. V3, 3w not started |
-| 4, Abl | Long-history pretraining or bootstrap (conditional); ablations | not started |
+| 1 / 2 / 3 / 3w | V1 decision structure / V2 robust learning / V3 signal pack / weekly decisions | **Step 1 done 2026-10-07 with V1b**: adopted over R0′ (+0.12) but ≈ buy-and-hold (0.64 vs 0.67); see below. V2 (HL-Gauss), V3, 3w not started |
+| 4, Abl | Long-history pretraining or bootstrap (conditional); ablations | **Step 4 done 2026-10-07**: V4 = V1b + 81-year pretraining, 0.67 = buy-and-hold; adopted (seed IQR −91 %); no timing. Ablations not started |
+| H | Hyperparameter search on synthetic worlds incl. the new 1–4-week world W-swing (§V12.1 item 23, no trials) → the best two on real data (H1, H2 + neo-broker twins, 4 trials) | **running** (queued 2026-10-07 22:19; `experiments/reports/V2_hpo.md`, then `V2_H.md`) |
 | M6 | Live forward test | **deferred** (future work) |
 
 ---
@@ -452,4 +453,81 @@ Pass criteria:
    - **A stricter gate (z = 2)** changes little: +0.25 at 3.9 turns/yr.
    - **The W-vol hypothesis is not confirmed.** A risk-aware reward without the anchor neither fixes W-vol nor keeps W-regime; behaviour becomes erratic (one W-vol run −0.35). W-vol timing (oracle +0.19) remains too weak a signal for the current learner.
    - **Candidate:** `config/v2/V1b.yaml` (V1 + MSE + 20-step + 10 gated heads, z = 1). It formally satisfies stopping rule 1 on the pre-registered seeds 0–4, but the robustness check fails. Its real-data run (Step 1, +1 trial) **awaits the owner's decision** (§V12.1 item 21).
+
+## v2 Step 1 — V1b on real data (2026-10-07)
+
+V1b = V1 + MSE loss + 20-step hold targets + 10 bootstrapped heads with the uncertainty gate (`config/v2/V1b.yaml`), 10 seeds × 5 folds, trial 18. Full report: [`experiments/reports/V2_1.md`](experiments/reports/V2_1.md).
+
+| Median @ 10 bp | V1b | R0′ | Buy-and-hold |
+|---|---|---|---|
+| **26 ETFs (H1 set), Sharpe** | **0.64** (IQR 0.68) | 0.43 | 0.67 |
+| Turnover / yr, exposure | 0.49, 97 % | 16.6, 83 % | 0.49, 98 % |
+| 7 leave-out ETFs / ^GDAXI / SPY+EFA neo-broker | 0.53 / 0.39 / 0.59 | 0.28 / 0.23 / 0.36 | 0.53 / 0.39 / 0.59 |
+| Timing IC / switches per 100 bars | −0.009 / 0.2 | 0.003 / 26.9 | |
+| Deflated Sharpe (N_trials 18) / G-lag | 0.73 / pass (−0.02) | 0.62 / pass | |
+
+**§V8 adoption rule vs R0′: adopted.** The paired median Δ is +0.12 (one-sided p < 0.001), turnover is −97 % and the seed IQR −88 %. V1b is the new reference.
+
+### What this means
+
+1. **The new decision structure fixes the costly failure of every v1 agent.** No more noise trading: +0.12 Sharpe over R0′, and the same holds on the leave-out ETFs, ^GDAXI and the neo-broker account.
+2. **But on real data V1b is buy-and-hold in practice.** It holds about 97 % on average, switches 0.2 times per 100 bars, and its timing IC is 0. Against buy-and-hold it is −0.06 (not significant). The only visible deviation is fold F2 (1.12 vs 1.45).
+3. **This matches the synthetic robustness check.** V1b times regimes only weakly (+0.06 pooled over 10 synthetic seeds), and real data has even fewer and noisier regime events. Step 4 (more history) is the planned answer.
+
+## v2 Step 4 — V4: V1b + long-history pretraining (2026-10-07)
+
+- **Pretraining:** 10 seeds once on 81 years of US daily returns (Kenneth French: 5 industries + the market, 1926-07-01 → 2007-06-29). VIX is masked with `vix_avail`.
+- **Fine-tuning:** every ETF fold with 50 % of the budget. This is trial 19.
+- **Full report:** [`experiments/reports/V2_4.md`](experiments/reports/V2_4.md).
+
+| Median @ 10 bp | V4 | V1b | Buy-and-hold |
+|---|---|---|---|
+| **26 ETFs (H1 set), Sharpe** | **0.67** (IQR 0.68) | 0.64 | 0.67 |
+| V4 − V1b, paired | +0.00 (p = 0.21) | | |
+| Seed IQR within a fold | −91 % vs V1b | | |
+| Turnover / yr, exposure | 0.49, 97.5 % | 0.49, 97.2 % | 0.49, 97.5 % |
+| Leave-out / ^GDAXI / SPY+EFA neo-broker | 0.53 / 0.39 / 0.59 | 0.53 / 0.39 / 0.59 | 0.53 / 0.39 / 0.59 |
+| Timing IC / deflated Sharpe (N_trials 19) / G-lag | −0.001 / 0.73 / pass | −0.009 / 0.70 / pass | |
+| Minutes per fine-tuning job | 3.2 | 6.1 | |
+
+**§V8 adoption vs V1b: adopted, by rule (b).** The median Δ is ≥ −0.02 and the seed IQR is −91 %. V4 is the new reference.
+
+### What this means
+
+1. **The pretraining made the agent consistent, not smarter.** All seeds now agree almost perfectly, and the remaining small deviations of V1b disappeared (fold F2: 1.29 vs 1.12). Its timing IC is still 0.
+2. **On real data both v2 agents have converged to buy-and-hold.** That is the best *safe* policy the learner can justify from the data it gets. The 81 extra years did not reveal a daily timing signal that the current inputs and learner can use.
+3. **Implication for the plan:** more history alone is not the lever. The next levers are the *learner* (literature ideas: HL-Gauss, larger regularised networks, target schedules, randomised priors) and the *inputs* (V3 signal pack). Choosing among them needs a systematic hyperparameter-optimisation plan on synthetic data first.
+
+## v2 synthetic screen — the owner's ideas on top of V1b (2026-10-07)
+
+The owner's two ideas of the morning (PROTOCOL Part II v2.0.4), screened on the synthetic worlds before any real-data use:
+- **40-day hold targets** (`agent.algo.n_step: 40`). On real data they would need a 60-bar purge, a protocol change.
+- **A 4× wider network** (`transformer_dim` 32, hidden layers [256, 128]), the BBF scale.
+- Both together.
+
+All runs: seeds 0–9 (0–4 pre-registered, 5–9 the robustness seeds), 10 bp + 1 bp, no trials. The V1b row pools its two runs on the same 10 seeds. Raw rows: `experiments/synthetic.csv`; table: [`experiments/reports/V2_0c.md`](experiments/reports/V2_0c.md).
+
+| Median over 10 seeds | W-null gain (turns/yr) | W-null runs < −0.02 | W-vol gain | W-regime gain, net (gross) | W-regime turns/yr | W-regime runs > +0.02 / < −0.02 |
+|---|---|---|---|---|---|---|
+| V1b | +0.00 (0.1) | 4 | +0.00 | +0.06 (+0.10) | 3.5 | 8 / 0 |
+| + 40-day targets | +0.00 (0.1) | 4 | +0.00 | +0.08 (+0.12) | 3.6 | 7 / 0 |
+| 4× wider network | **−0.13 (8.7)** | 6 | +0.00 | +0.08 (**+0.22**) | 16.1 | 6 / 1 |
+| 4× wider + 40-day targets | −0.09 (3.8) | 6 | −0.12 | +0.03 (+0.18) | 17.1 | 5 / 3 |
+| *oracle* | *+0.00* | | *+0.15* | *+0.40* | *6.0* | |
+
+### What this means
+
+1. **40-day targets change nothing measurable.** +0.08 against +0.06 in W-regime is inside the seed noise: single runs move by up to ±0.2 between the two variants. On this evidence the purge change is not worth it; n = 40 stays in the hyperparameter search space, and the purge question is decided only if a winner needs it (owner, 2026-10-07).
+2. **The wider network learns more than twice the gross timing (+0.22 vs +0.10), so network capacity was a limit.** But it also trades noise:
+   - in W-null it loses in 6 of 10 runs, with 8.7 turns/yr;
+   - in W-regime its 16 turns/yr eat most of the gross gain.
+
+   The z = 1 gate does not stop this. The likely reason: all heads read the same, larger trunk, so its fitted noise patterns are shared and the heads agree on them.
+3. **Both together are worse than either alone**, including a loss in W-vol (−0.12 at 15 turns/yr).
+4. **The W-null noise trading stays seed-specific.** Seeds 0, 2 and 9 lose in every variant; the wider networks add seeds 3, 7 and 8.
+
+### Improvement ideas
+
+- *Inside the approved plan:* a larger network only together with its brakes, i.e. weight decay, randomised prior functions that keep the heads' disagreement meaningful, and the gate. These are dimensions of the planned hyperparameter search (HANDOVER §4.1), whose W-null penalty would disqualify the plain wide setting (−0.13).
+- *Inside the approved plan:* draw the search's first round as a balanced design (every option equally often) instead of purely at random, so that the "wide + regularised" corner is sure to be tested.
 

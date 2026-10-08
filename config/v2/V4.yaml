@@ -1,0 +1,15 @@
+# PROTOCOL Part II, Step 4 (§V6.4; owner decision 2026-10-07: right after Step 1):
+# V4 = V1b + long-history pretraining.
+#   1. scripts/run_agent.py --config config/v2/V4.yaml --pretrain  (no trial on its own): 10 seeds once on
+#      81 years of US daily returns (Kenneth French: 5 value-weighted industries + the market,
+#      1926-07-01 -> 2007-06-29, harness/longhistory.py), full budget (100k transitions).
+#   2. the normal run fine-tunes every ETF fold from its seed's checkpoint with 50 % of the budget.
+# Before 1990 only return-derived inputs exist, so VIX is masked with the new flag vix_avail
+# (constant 1 on the ETF data). Compared against V1b, its parent, which isolates the pretraining. +1 trial.
+inherit: config/v2/V1b.yaml
+name: v2_V4
+agent:
+  features: [log_ret, p_sma20, p_sma50, bb_pctb, rsi14, macd_hist, vol_rel20, atr14_p, sigma20,
+             vix_lag1, vix_chg_lag1, resid, resid_cum30, resid_avail, vix_avail]
+  train: {transitions: 50000}
+  pretrain: {dir: experiments/runs/pretrain/v2_V4, transitions: 100000, window: ["1926-07-01", "2007-06-29"]}

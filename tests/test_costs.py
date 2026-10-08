@@ -104,3 +104,15 @@ def test_agent_trains_under_a_cost_scenario_end_to_end(synthetic_agent_cfg):
     assert set(res.metrics["cost"]) == {"10bp", "neo_broker"}
     expo = res.metrics["exposure"].to_numpy()
     assert np.all((expo >= 0) & (expo <= 1))
+
+
+def test_cost_positions_sizes_the_fee_to_the_deployment_account():
+    """agent.env.cost_positions: the EUR 1 fee is a share of the owner's position size (2 x EUR 5,000 = 2 bp),
+    not of the capital split over all training sleeves (EUR 10,000 / 26 = 26 bp)."""
+    from harness.config import load_config
+    from rl.policy import cost_function
+    cfg = load_config("config/v2/V1b.yaml", {"agent": {"env": {"cost_scenario": "neo_broker"}}})
+    assert cost_function(cfg)("SPY", 26).fee_frac == pytest.approx(26 / 10000)
+    cfg["agent"]["env"]["cost_positions"] = 2
+    assert cost_function(cfg)("SPY", 26).fee_frac == pytest.approx(1 / 5000)
+    assert cost_function(load_config("config/v2/V1b.yaml"))("SPY", 26) == pytest.approx(11e-4)   # PROTOCOL level

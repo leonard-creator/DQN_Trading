@@ -207,3 +207,15 @@ def test_z_score_is_expanding_until_the_window_is_full():
         assert z[i] == pytest.approx((h[-1] - h.mean()) / h.std(ddof=1))
     h = x["a"].to_numpy()[300 - 251: 301]                                 # rolling afterwards
     assert z[300] == pytest.approx((h[-1] - h.mean()) / h.std(ddof=1))
+
+
+def test_vix_avail_masks_the_vix_group_where_vix_did_not_exist():
+    """Step 4 (§V6.4): before 1990 there is no VIX; the flag is 0 and both VIX features are 0 there."""
+    prices, vix, _ = factor_world()
+    v = vix.copy()
+    v.iloc[:300, 0] = np.nan                                       # "VIX did not exist yet"
+    feats = ["log_ret", "vix_lag1", "vix_chg_lag1", "vix_avail"]
+    f = build_m4_features(prices, ["T0"], feats, list(prices)[:6], v, V2)["T0"]
+    flag, lvl = f[:, feats.index("vix_avail")], f[:, feats.index("vix_lag1")]
+    assert np.all(flag[:301] == 0.0) and np.all(lvl[:301] == 0.0)  # lag 1: bar 300 still sees no VIX
+    assert flag[-1] == 1.0 and np.any(lvl[350:] != 0.0)

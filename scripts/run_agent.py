@@ -11,9 +11,16 @@ budget, no trial log, no wandb. It prints run time and the INNER-validation
 curve, and deliberately does not print outer-validation metrics, so smoke runs
 cannot feed into design decisions (they would be uncounted trials).
 
+--pretrain trains the configuration on the long history (PROTOCOL Part II Step 4,
+harness/longhistory.py) once per seed; its fine-tuning run is then a normal run.
+
 --synthetic trains and scores the configuration on the three synthetic worlds of
 PROTOCOL Part II §V6.5 (harness/synthetic.py). Logged in experiments/synthetic.csv,
 never as a trial. --calibrate only checks the worlds' calibration rule (no training).
+
+--hpo runs the hyperparameter search on the synthetic worlds around the configuration
+(PROTOCOL Part II §V12.1 item 23, harness/hpo.py): never a trial, results in
+experiments/reports/v2_hpo/ and V2_hpo.md.
 """
 
 import argparse
@@ -42,6 +49,8 @@ def main():
     p.add_argument("--synthetic", action="store_true", help="v2 Step 0c on the synthetic worlds (no trial)")
     p.add_argument("--worlds", nargs="*", help="--synthetic: subset of W-null W-vol W-regime")
     p.add_argument("--calibrate", action="store_true", help="v2 Step 0c calibration rule only")
+    p.add_argument("--pretrain", action="store_true", help="v2 Step 4: long-history pretraining into agent.pretrain.dir")
+    p.add_argument("--hpo", action="store_true", help="v2 hyperparameter search on the synthetic worlds (no trial)")
     args = p.parse_args()
     sets = {}
     for kv in args.set:                                  # a.b.c=value -> {"a": {"b": {"c": value}}}
@@ -51,11 +60,21 @@ def main():
         for k in path:
             node = node.setdefault(k, {})
         node[last] = yaml.safe_load(value)
+    if args.hpo:
+        from harness import hpo
+        print(hpo.run(load_config(args.config, sets), workers=args.workers).to_string(index=False))
+        return
+    if args.pretrain:
+        from harness import longhistory
+        longhistory.run(load_config(args.config, sets), seeds=args.seeds if args.seeds else range(10),
+                        workers=args.workers)
+        return
     if args.synthetic or args.calibrate:
         from harness import synthetic
         cfg = load_config(args.config, sets)
         if args.calibrate:
-            synthetic.calibrate(cfg)
+            synthetic.calibrate(cfg, seeds=args.seeds if args.seeds else range(5),
+                                worlds=args.worlds or synthetic.WORLDS)
         else:
             rows = synthetic.run(cfg, workers=args.workers, worlds=args.worlds or synthetic.WORLDS,
                                  seeds=args.seeds if args.seeds else range(5))

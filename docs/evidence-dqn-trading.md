@@ -189,3 +189,33 @@
 | European Parliament question E-004745/2021 | 2021 | official | US-domiciled ETFs and PRIIPs for EU retail investors (M6, deferred) | https://www.europarl.europa.eu/doceo/document/E-9-2021-004745_EN.html |
 
 *Provenance note (2026-10-06):* this entry and the table above were researched and verified by the project owner (source file `_templates/Evidence_for_research.md`) and copied here unchanged, without re-verification, at the owner's instruction.
+
+## 2026-10-07 — Tricks for timing and learning after the synthetic diagnosis (owner request)
+**Channel:** web search + targeted full-text reads (arXiv HTML), retrieved by Claude in this session (not owner-verified).
+**Queries:** "BBF value-based RL network scaling n-step annealing discount annealing resets"; "SimBa simplicity bias scaling up parameters deep RL"; "randomized prior functions bootstrapped ensemble"; "few-shot learning financial time-series trend-following regime change X-Trend"; "revisiting fundamentals of experience replay n-step"; "Mnih 2015 clip the error term"; HL-Gauss full text.
+
+| Paper | Year | Type | Finding (one line) | Link |
+|---|---|---|---|---|
+| Schwarzer et al., ICML (PMLR 202): BBF, details added | 2023 | primary | Scaling recipe: 4× wider ResNet, replay ratio 8; n-step annealed 10 → 3 and γ 0.97 → 0.997 (exponentially over the first 10k steps after each reset); AdamW weight decay 0.1; resets every 40k steps (shrink-and-perturb 50 %); EMA target net. The SPR self-prediction loss was the most critical component. | https://ar5iv.labs.arxiv.org/html/2305.19452 |
+| Lee et al., ICLR (SimBa) | 2025 | primary | Running input normalisation + residual feed-forward blocks + LayerNorm let RL networks scale up their parameters with better sample efficiency. | https://arxiv.org/abs/2410.09754v1 |
+| Farebrother et al., arXiv (Stop Regressing): HL-Gauss details added | 2024 | preprint | HL-Gauss: Gaussian σ / bin width = 0.75; 21–201 bins tested; degrades more slowly than MSE as target noise grows; keeps plasticity under non-stationary targets; larger networks keep improving where MSE plateaus. | https://arxiv.org/html/2403.03950v1 |
+| Osband, Aslanides & Cassirer, NeurIPS | 2018 | primary | Randomized prior functions: a fixed random prior network added to each ensemble member supplies the uncertainty that bootstrapping alone lacks. | https://proceedings.neurips.cc/paper/2018/hash/5a7b238ba0f6502e5d6be14424b20ded-Abstract.html |
+| Fedus et al., ICML | 2020 | primary | Experience-replay study: uncorrected n-step returns are uniquely beneficial, especially with larger replay capacity. | https://arxiv.org/pdf/2007.06700 |
+| Wood et al., arXiv (X-Trend) | 2023 | preprint | Cross-attention over a context set of past regimes from other assets adapts trend following to new regimes. Sharpe +18.9 % vs a neural forecaster in 2018–2023; recovers from the COVID drawdown twice as fast; works zero-shot on unseen assets. | https://arxiv.org/pdf/2310.10500 |
+| Mnih et al., Nature 518 | 2015 | primary | DQN clipped the TD error to [−1, 1] for stability, which is equivalent to Huber δ = 1. Source of the Huber default in M2. | https://klab.tch.harvard.edu/academia/classes/Neuro230/ReadingAssignments/MnihEtAlHassibis15NatureControlDeepRL.pdf |
+
+**Conclusion (for our learner):** the sources point at the same bottleneck the synthetic probe found, small mean gaps in noisy targets. Five levers follow:
+1. A classification loss (HL-Gauss) instead of regression, which also makes larger networks pay off.
+2. Larger networks only together with regularisers: weight decay, resets, and LayerNorm inside residual blocks (our plain LayerNorm test did not help).
+3. Long n-step targets early and shorter later, with discount annealing.
+4. A self-predictive auxiliary loss (planned as V3's auxiliary heads).
+5. Randomised prior networks, so the gating heads keep a meaningful disagreement.
+
+X-Trend supports cross-asset regime context.
+
+**Open questions:**
+- Do Atari- and robotics-scale results transfer to low signal-to-noise daily returns?
+- Which HL-Gauss value range suits vol-scaled 20-step targets?
+- How large can n grow before the "hold" bias dominates?
+
+**Not found / could not verify:** the venue of the HL-Gauss paper (only arXiv in the retrieved result); X-Trend's full author list and its published version.
