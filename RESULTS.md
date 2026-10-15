@@ -21,9 +21,9 @@ Results under [`PROTOCOL.md`](PROTOCOL.md) (v1.2), one section per milestone. Ev
 | 0b | Data audit + Q1 leak fix (`DATA_AUDIT.md`) | **done 2026-10-06**: data clean; Q1 leak quantified and fixed (pipeline v2); see below |
 | 0c | Synthetic positive controls (W-null, W-vol, W-regime) | **done 2026-10-07**: R0′ fails all 3 worlds; V1 passes W-null and fails W-vol and W-regime → **stopping rule 1: real-data trials paused**, synthetic iteration running |
 | 0d | Clean reference R0′ (Q1 fix + P = 40) | **done 2026-10-07**: 0.43 vs R0 0.44 (Δ −0.00), the new reference; see below |
-| 1 / 2 / 3 / 3w | V1 decision structure / V2 robust learning / V3 signal pack / weekly decisions | **Step 1 done 2026-10-07 with V1b**: adopted over R0′ (+0.12) but ≈ buy-and-hold (0.64 vs 0.67); see below. V2 (HL-Gauss), V3, 3w not started |
+| 1 / 2 / 3 / 3w | V1 decision structure / V2 robust learning / V3 signal pack / weekly decisions | **Step 1 done 2026-10-07 with V1b**: adopted over R0′ (+0.12) but ≈ buy-and-hold (0.64 vs 0.67). V2's components were tested in the search (HL-Gauss, heads, LayerNorm; synthetic) and on real data in trials 20–23 (not adopted). **Step 3 done 2026-10-15 (V3, trial 24)**: 0.34, not adopted, no gross skill → **stopping rule 2 reached**. 3w not run |
 | 4, Abl | Long-history pretraining or bootstrap (conditional); ablations | **Step 4 done 2026-10-07**: V4 = V1b + 81-year pretraining, 0.67 = buy-and-hold; adopted (seed IQR −91 %); no timing. Ablations not started |
-| H | Hyperparameter search on synthetic worlds incl. the new 1–4-week world W-swing (§V12.1 item 23, no trials) → the best two on real data (H1, H2 + neo-broker twins, 4 trials) | **running** (queued 2026-10-07 22:19; `experiments/reports/V2_hpo.md`, then `V2_H.md`) |
+| H | Hyperparameter search on synthetic worlds incl. the new 1–4-week world W-swing (§V12.1 item 23, no trials) → the best two on real data (H1, H2 + neo-broker twins, 4 trials) | **search done 2026-10-08**: winner c00 (HL-Gauss, 5-day targets, 4× network, 10 gated heads) captures 60–77 % of the oracle's gain; real-data trials **paused** by the guard (finalist c25 trades noise); follow-up screen of the value range (item 24): AHL-Gaussian does not help, c00 with the fixed range stays the most robust; real data (trials 20–23, 2026-10-08): H1 0.49, H2 0.43, H1nb 0.36, H2nb 0.27 vs V4 / buy-and-hold 0.67, none adopted; real ETFs mean-revert at 1–4 weeks (W-swing trends); see below |
 | M6 | Live forward test | **deferred** (future work) |
 
 ---
@@ -531,3 +531,330 @@ All runs: seeds 0–9 (0–4 pre-registered, 5–9 the robustness seeds), 10 bp 
 - *Inside the approved plan:* a larger network only together with its brakes, i.e. weight decay, randomised prior functions that keep the heads' disagreement meaningful, and the gate. These are dimensions of the planned hyperparameter search (HANDOVER §4.1), whose W-null penalty would disqualify the plain wide setting (−0.13).
 - *Inside the approved plan:* draw the search's first round as a balanced design (every option equally often) instead of purely at random, so that the "wide + regularised" corner is sure to be tested.
 
+
+## v2 Step H — Hyperparameter search on synthetic worlds (2026-10-08)
+
+The search of PROTOCOL Part II §V12.1 item 23 (`harness/hpo.py`), for the owner's objective of timing on a 1–4-week horizon at small costs:
+- 32 learner settings (a balanced random design), all with V1b's decision structure, **no buy-and-hold head start** (anchor 0, no prior) and 5 bp per unit traded.
+- Three worlds: W-null (no timing exists), W-regime (bull/bear) and the new **W-swing** (each ticker's own trend; the oracle holds about 3–4 weeks and trades 17 times a year).
+- *Oracle share* = the agent's median gain over buy-and-hold ÷ the oracle's median gain. Score = mean oracle share over W-swing and W-regime, −1 if the agent loses more than 0.05 in W-null (noise trading).
+- Successive halving: 32 settings at ¼ of the training budget (seeds 0–4) → 8 at ½ (seeds 0–9) → 2 at the full budget on **new** seeds 10–19.
+- Synthetic only, **no trials** (N_trials stays 19). Full tables: [`experiments/reports/V2_hpo.md`](experiments/reports/V2_hpo.md).
+
+### The 8 finalists of round 1 through all three rounds
+
+Architecture legend:
+- **Loss:** HL-Gauss = value as a histogram (cross-entropy); MSE = squared error.
+- **n:** look-ahead of the training targets, in days.
+- **Net:** ×1 = V1b's network (transformer width 8, hidden layers 64-32); ×4 = 4× wider (32, 256-128).
+- **Heads / z:** number of bootstrapped advisor heads / the gate's agreement level.
+- **β:** random-prior scale; **wd:** weight decay; **lr:** learning rate.
+
+Round cells = score; ⚠ = trades noise in W-null (penalty).
+
+| Setting | Loss | n | γ | Net | Heads / z | β | wd | lr | Round 1 (¼ budget) | Round 2 (½ budget) | Round 3 (full, new seeds) | Trend |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| **c00** | **HL-Gauss** | **5** | **0.99** | **×4** | **10 / 1** | **0** | **0** | **1e-4** | +0.73 | +0.65 | **+0.69** | **stable: the winner** |
+| c25 | HL-Gauss | 5 | 0.99 | ×4 | 20 / 1 | 3 | 0.1 | 1e-4 | +0.58 | **+0.74** | −0.36 ⚠ | noise trading at full budget |
+| c19 | HL-Gauss | 10 | 0.99 | ×4 | 10 / 1 | 3 | 0 | 1e-4 | **+0.82** | +0.59 | – | falling |
+| c05 | HL-Gauss | 20 | 0.99 | ×4 | 1 / 0 | 0 | 0.1 | 1e-4 | +0.40 | +0.26 | – | weak |
+| c12 | MSE | 5 | 0.9 | ×1 | 20 / 0.5 | 0 | 0.1 | 3e-4 | +0.75 | −0.41 ⚠ | – | noise with more training |
+| c14 | MSE | 20 | 0.9 | ×1 | 10 / 0.5 | 0 | 0.1 | 3e-4 | +0.69 | −0.49 ⚠ | – | noise with more training |
+| c23 | MSE | 5 | 0.9 | ×4 | 20 / 0 | 0 | 0 | 1e-4 | +0.66 | −0.58 ⚠ | – | noise with more training |
+| c09 | HL-Gauss | 40 | 0.99 | ×4 | 1 / 0 | 0 | 0 | 1e-4 | +0.34 | −0.87 ⚠ | – | no swing timing, then noise |
+
+### Which ingredients pay off (round 1, every option in 10–16 of the 32 settings)
+
+| Ingredient | Options | Mean oracle share | Settings that trade noise in W-null | In the round-1 top 8 | Direction |
+|---|---|---|---|---|---|
+| Learning rate | **1e-4** / 3e-4 | 20 % / 33 % | **25 %** / 81 % | 6 / 2 | slow learning is what keeps the agent from trading noise |
+| Random prior β | **0** / 3 | **38 %** / 16 % | **31 %** / 75 % | 6 / 2 | random priors hurt (against the literature's expectation) |
+| Heads | 1 / **10** / 20 | 4 % / **43 %** / 34 % | 73 % / **36 %** / 50 % | 2 / 3 / 3 | an ensemble is essential; 10 is enough |
+| Gate z | 0 / 0.5 / **1** | 12 % / 30 % / **39 %** | 55 % / 45 % / 60 % | 3 / 2 / 3 | a strict gate captures most |
+| Targets n | **5** / 10 / 20 / 40 | **41 %** / 32 % / 33 % / 1 % | **25 %** / 62 % / 62 % / 62 % | 4 / 1 / 2 / 1 | short targets for 1–4-week timing; 40 days never helps |
+| γ | 0.9 / 0.95 / **0.99** | 36 % / 9 % / 36 % | 36 % / 82 % / 40 % | 3 / 0 / 5 | 0.99 in all final leaders |
+| Network | ×1 / **×4** | 26 % / 28 % | 44 % / 62 % | 2 / 6 | the wide network leads, but only with the slow lr and the gate |
+| Loss | **HL-Gauss** / MSE | 23 % / 30 % | 50 % / 56 % | 5 / 3 | level at ¼ budget; with more training only HL-Gauss stays clean |
+| Weight decay | 0 / 0.1 | 27 % / 26 % | 56 % / 50 % | 4 / 4 | no effect |
+
+### Round 3: the two finalists at the full budget on new seeds 10–19
+
+| Median over seeds 10–19, net of 5 bp | W-swing | W-regime | W-null |
+|---|---|---|---|
+| Buy-and-hold net Sharpe | 0.88 | 0.94 | 0.89 |
+| Oracle: gain over buy-and-hold | +0.30 | +0.39 | 0 (no timing exists) |
+| **c00: gain (turns/yr)** | **+0.23 (20)** | **+0.23 (6)** | −0.02 (0.2); 5 of 10 worlds lose > 0.02 |
+| c25: gain (turns/yr) | +0.20 (17) | +0.23 (6) | −0.07 (13) ⚠; 7 of 10 worlds lose > 0.02 |
+| **c00: share of the oracle's gain** | **77 %** | **60 %** | – |
+
+### What this means
+
+1. **A clear winner, stable across all three rounds:** c00 = HL-Gauss loss, 5-day targets, γ 0.99, the 4× wider network, 10 advisor heads with a strict gate (z = 1), learning rate 1e-4, no random prior, no weight decay.
+   - It captures 77 % of the oracle's gain in W-swing, trading about 20 times a year (holds of about 2–3 weeks), and 60 % in W-regime.
+   - V1b, the best agent before the search, captured 16 % in W-regime. It is not fully comparable (10 bp, the anchor), but the jump is large.
+2. **The trend: longer training separates robust ingredients from fragile ones.**
+   - At ¼ budget MSE and HL-Gauss were level. With more training, all three MSE finalists (two of them with lr 3e-4) started trading noise.
+   - What stays clean is the combination HL-Gauss + slow learning rate + an advisor ensemble with a strict gate.
+3. **Random priors, the literature's remedy for over-confident ensembles, hurt here.** c25 (random priors + 20 heads + weight decay) led round 2 but traded noise at full budget in 7 of 10 W-null worlds.
+4. **c00 is not perfectly clean either.** It loses more than 0.02 in 5 of 10 W-null worlds, 3 of them with 10–19 turns a year. Its median stays inside the limit.
+5. **Real data:** the queue's guard paused the 4 trials because the second finalist (c25) failed. On the owner's request, a follow-up screen (§V12.1 item 24) tests AHL-Gaussian's adaptive value range on c00, c19 and c25 on fresh seeds 20–29. The owner then chooses which settings go to real data.
+
+**Caveats:** synthetic worlds only. Round 1 ran at ¼ budget with 5 seeds each, and the ingredient table shows averages over settings, so interactions are hidden. γ 0.95's poor mean is probably bad luck in its 11 settings, since it lies between two good values.
+
+### Improvement ideas
+
+- *Running (item 24):* the value range of HL-Gauss (fixed ±6 SD vs adaptive), since HL-Gauss carries every winner.
+- *Needs an owner decision:* c00's residual noise trading in W-null. Candidates are a stricter gate (z 1.5–2) or a minimum holding time; both are cheap synthetic screens.
+- *Needs an owner decision:* the W-swing oracle uses only each ticker's own returns, and c00 already gets 77 % of it. A stronger oracle (removing the common factor first) would show how much timing is left on the table.
+
+### Follow-up screen: AHL-Gaussian's adaptive value range vs the fixed range (§V12.1 item 24, 2026-10-08)
+
+The leading settings c00, c19 and c25 at the full budget on **fresh seeds 20–29**, each with three value ranges for the HL-Gauss bins:
+- `fixed` = our range from the training data (about ±15 for c00), as in the search;
+- `AHL` = the range learnt as in Chen et al. (2025), with the step scaled to our ~25k updates; it starts at ±3 and ends at about ±12–16;
+- `AHL-paper` = the paper's step size, under which the range stays narrow (about ±5–7).
+
+Synthetic only, no trials; 5 bp; oracle gain +0.33 in W-swing and +0.32 in W-regime. Full table: [`experiments/reports/V2_hpo.md`](experiments/reports/V2_hpo.md) ("Screen 'support'").
+
+| Setting | Value range | Score | Share of oracle gain, W-swing (turns/yr) | Share of oracle gain, W-regime (turns/yr) | W-null gain (turns/yr) | W-null worlds losing > 0.02 |
+|---|---|---|---|---|---|---|
+| **c00** | **fixed** | **+0.53** | **70 % (21)** | **36 % (11)** | **−0.00 (2.1)** | **3 / 10** |
+| c00 | AHL | −0.47 ⚠ | 70 % (21) | 36 % (8) | −0.09 (16) | 6 / 10 |
+| c00 | AHL-paper | +0.65 | 86 % (21) | 45 % (5) | −0.04 (6) | 7 / 10 |
+| c19 | fixed | −0.58 ⚠ | 54 % (20) | 29 % (9) | −0.19 (22) | 7 / 10 |
+| c19 | AHL | −0.62 ⚠ | 28 % (27) | 48 % (6) | −0.13 (19) | 9 / 10 |
+| c19 | AHL-paper | −0.49 ⚠ | 66 % (21) | 35 % (9) | −0.19 (25) | 8 / 10 |
+| c25 | fixed | −0.40 ⚠ | 75 % (16) | 46 % (11) | −0.050 (7) | 5 / 10 |
+| c25 | AHL | +0.68 | 90 % (16) | 47 % (8) | −0.047 (12) | 8 / 10 |
+| c25 | AHL-paper | −0.26 ⚠ | 108 % (13) | 40 % (8) | −0.053 (9) | 8 / 10 |
+
+Paired over the same 10 worlds, the median change in gain against the fixed range:
+- AHL: W-swing +0.01 / −0.04 / −0.02 (c00 / c19 / c25), W-regime ≈ 0, W-null −0.02 / 0.00 / +0.02.
+- AHL-paper: W-swing +0.04 / +0.04 / +0.10, W-regime ≈ 0, W-null −0.03 / −0.02 / −0.05.
+
+#### What this means
+
+1. **AHL-Gaussian does not improve our agent.**
+   - The learnt range ends near our fixed one: fat-tailed targets keep pulling it wider. It times exactly as well (c00: 70 % / 36 % with either range).
+   - But for c00 it trades noise in W-null (16 turns/yr, −0.09), probably because its bins keep moving during training.
+   - The fixed, data-based range stays. This matches the prior expectation: the paper fixes value scales that are unknown and growing, which ours are not.
+2. **A narrow range (AHL-paper) sharpens the value differences, which cuts both ways.** It captures more swing timing (+0.04 to +0.10 Sharpe on matched worlds) but also trades more noise in W-null (7–8 of 10 worlds lose). It is a capture-vs-noise trade-off, not a free gain.
+3. **c00 with the fixed range holds up on new seeds:**
+   - It is the only configuration that is clean in W-null (median −0.00, 2 turns/yr, 3 of 10 worlds losing).
+   - It captures 70 % of the oracle in W-swing; in W-regime 36 % here vs 60 % on seeds 10–19, which is seed variance.
+   - It is the most robust setting across all four seed sets (rounds 1–3 and this screen).
+4. **c19 trades noise at the full budget in every variant** (W-null −0.13 to −0.19), so it drops out.
+5. **c25 sits exactly on the noise limit with every range** (W-null −0.047 to −0.053). Its scores flip between +0.68 and −0.40 on that threshold, so its "AHL win" is an artefact of the cut-off, not an effect of AHL.
+
+#### Improvement ideas
+
+- *Inside the plan:* keep the fixed range. Carry **c00** to real data first.
+- *Needs an owner decision:* the narrow-range effect (more capture, more noise) suggests pairing a narrower range with a stricter gate (z 1.5–2). That could keep the extra capture without the noise trades; it is a cheap synthetic screen.
+- *Method note:* the hard −0.05 cut-off makes borderline settings flip. For future screens, report the W-null loss continuously next to the score, as done here.
+
+## v2 Step H on real data — the two search finalists (2026-10-08)
+
+The owner's choice after the follow-up screen (PROTOCOL v2.0.8, overriding the queue guard):
+- **H1** = c00 and **H2** = c25, both with the fixed value range, trained at the protocol's 10 + 1 bp;
+- **H1nb** and **H2nb**: the same, trained under the neo-broker costs, sized to a 2 × EUR 5,000 account.
+
+10 seeds × 5 folds each, **trials 20–23** (N_trials 23 of 26), compared with V4 by the §V8 rule. Full report: [`experiments/reports/V2_H.md`](experiments/reports/V2_H.md).
+
+| Median (26 ETFs) | Sharpe @ 10 bp (IQR) | @ 0 bp | Turnover / yr | Exposure | Timing IC | Δ vs V4 (p) | Leave-out 7 ETFs | SPY + EFA, neo-broker |
+|---|---|---|---|---|---|---|---|---|
+| H1 (c00) | 0.49 (1.06) | 0.59 | 16.8 | 74 % | 0.005 | −0.17 (1.0) | 0.30 | 0.49 |
+| H2 (c25) | 0.43 (1.01) | 0.54 | 17.8 | 68 % | 0.005 | −0.21 (1.0) | 0.18 | 0.46 |
+| H1nb | 0.36 (1.06) | 0.64 | 32.4 | 69 % | 0.008 | −0.26 (1.0) | 0.34 | 0.50 |
+| H2nb | 0.27 (0.99) | 0.54 | 32.5 | 63 % | 0.006 | −0.31 (1.0) | 0.14 | 0.39 |
+| V4 (reference) | **0.67** (0.68) | 0.67 | 0.5 | 97 % | −0.001 | – | 0.53 | 0.59 |
+| *buy-and-hold* | *0.67* (0.68) | *0.67* | *0.5* | *97 %* | – | – | *0.53* | *0.59* |
+
+- **Per fold, H1 vs buy-and-hold:** F1 −0.78 vs 0.01, F2 0.83 vs 1.45, F3 0.49 vs 0.67, F4 0.73 vs 0.69, F5 −0.28 vs −0.21. Only F4 (2020–21) is ahead.
+- **Attribution (H1):** gross − buy-and-hold −0.08, cost −0.10.
+- **Diagnostics (H1):**
+  - action-gap ratio 0.10 (V4 0.18): the decisions are noise-driven;
+  - best checkpoint at 20 % of training, late drift −0.25;
+  - deflated Sharpe 0.54;
+  - gate G-lag **fails** for H1 (−0.06); H2 and both twins pass.
+- **§V8:** none of the four is adopted, and V4 stays the reference.
+
+### What this means
+
+1. **The synthetic timing skill does not transfer to the real ETFs.**
+   - The agents trade as designed (17–32 turns a year, 2–4-week holds) but find no edge: timing IC ≈ 0.005, and even before costs they trail buy-and-hold (0.54–0.64 vs 0.67).
+   - The trading costs then take another 0.1–0.3 Sharpe.
+2. **The likely reason is a mismatch between W-swing and the data.**
+   - Variance ratios of 5/10/20-day returns (development period only): real ETFs 0.87 / 0.82 / 0.83, i.e. **mean-reverting** at 1–4 weeks (about 2 standard errors below 1); W-swing 1.08 / 1.17 / 1.28 (trending); W-null 1.00 / 0.99 / 1.01.
+   - The search selected the best rider of 1–4-week trends, and the real ETFs show the opposite pattern on that horizon. This is consistent with M1, where no momentum rule beat buy-and-hold.
+3. **Cheaper training costs make it worse at 10 bp:** the neo-broker twins trade twice as often. Even under the neo-broker costs, on the 2-ETF deployment set they stay below buy-and-hold (0.50 vs 0.59).
+4. **The buy-and-hold head start was protecting V1b/V4.** Without it, the agent acts on noise; with it, it holds. On these data that is the better policy.
+5. **Budget:** 3 trials left (23 of 26). No configuration has shown gross timing skill on real data.
+
+### Improvement ideas
+
+- *Needs an owner decision (no trial):* a **realism check**. Build a synthetic world with the measured mean reversion (variance ratio ≈ 0.83 at 20 days) and test whether even its oracle beats buy-and-hold net of 5–10 bp. If not, 1–4-week timing of these ETFs is not exploitable and the objective needs rethinking. If it is, test whether c00 learns contrarian timing there before spending a trial.
+- *Inside the protocol:* the V3 signal pack (cross-asset and slower inputs, e.g. bond → equity momentum) is the one untested bundle that adds information rather than learning capacity.
+- *Needs an owner decision:* c00's learner with the buy-and-hold head start back on ("deviate only when sure"). It probably reverts to V4's behaviour, i.e. it is safe but adds nothing.
+
+### In euros: one investor with EUR 10,000, 2014 → 2023-09 (illustration, 2026-10-09)
+
+Our result translated into money once. The account is the owner's realistic one: **EUR 10,000 in SPY + EFA (half each) at the neo-broker** (EUR 1 per order, 3 bp half-spread). Every figure is after costs, from the stored decisions of the real-data trials (no retraining).
+- **Buy-and-hold** buys once in January 2014 and holds.
+- **The agents are retrained every 2 years,** exactly as in the walk-forward test.
+- **The two winners of the search** (in bold) are shown by their *representative* agent: the seed whose overall result is the median of its 10 seeds.
+- **Two contrast agents** were picked *after the fact* from all 40 real-data agents, to show what low-risk and high-risk trading look like:
+  - **low-risk** = c00 seed 6, the same design as H1; it was nearly out of the market in 2022;
+  - **high-risk** = c25 trained on neo-broker costs, seed 7, the most active of all 40.
+
+| Year | Buy-and-hold: profit (orders) | **H1 = c00 (winner)** | **H2 = c25 (2nd winner)** | Low-risk agent (c00, seed 6) | High-risk agent (c25-nb, seed 7) |
+|---|---|---|---|---|---|
+| 2014 | +318 (2) | **−496 (92)** | **−717 (68)** | −1,066 (75) | −356 (123) |
+| 2015 | +22 (0) | **−415 (109)** | **−540 (53)** | +42 (101) | −638 (122) |
+| 2016 | +691 (0) | **+140 (74)** | **−258 (85)** | −139 (92) | +14 (102) |
+| 2017 | +2,584 (0) | **+1,473 (58)** | **+1,363 (48)** | +1,816 (50) | +1,576 (100) |
+| 2018 (sell-off) | −1,256 (0) | **−1,462 (6)** | **−1,259 (13)** | −981 (13) | −307 (82) |
+| 2019 | +3,289 (0) | **+2,130 (4)** | **+1,548 (20)** | +2,533 (6) | +1,627 (101) |
+| 2020 (COVID crash) | +2,044 (0) | **+1,503 (15)** | **+1,832 (25)** | +813 (52) | +3,060 (69) |
+| 2021 | +3,516 (0) | **+2,558 (0)** | **+2,176 (1)** | +2,770 (5) | +3,042 (31) |
+| 2022 (bear year) | −3,424 (0) | **−2,165 (11)** | **−1,886 (91)** | **+72** (91) | −3,706 (66) |
+| 2023 (to Sep) | +1,782 (0) | **+1,329 (0)** | **+495 (48)** | +2,099 (39) | +1,306 (54) |
+| **End value** | **EUR 19,568** | **EUR 14,594** | **EUR 12,754** | EUR 17,958 | EUR 15,619 |
+| Orders in total | 2 | 369 | 452 | 524 | 850 |
+| Worst drawdown | 33 % | 31 % | 33 % | **26 %** | 31 % |
+| Average exposure | 100 % | 81 % | 75 % | 77 % | 66 % |
+
+Profit in EUR per calendar year (orders that year). All 10 H1 agents end between EUR 11,934 and 19,288, and all 10 H2 agents between EUR 12,426 and 19,884. A single H2 agent (seed 2) ends EUR 316 above buy-and-hold; one in 20, which is luck-sized.
+
+**The research portfolio** (26 ETFs, EUR 10,000, 10 bp + 1 bp per unit traded), end values with total orders:
+
+| Buy-and-hold | H1 | H2 | Low-risk agent | High-risk agent |
+|---|---|---|---|---|
+| EUR 17,505 (26) | EUR 12,906 (5,585) | EUR 12,493 (6,196) | EUR 12,126 (6,796) | EUR 9,429 (10,448) |
+
+#### What this shows
+
+1. **Our winners cost money against simply holding:** about EUR 5,000 (H1) and EUR 6,800 (H2) over almost 10 years on the owner's account.
+   - The loss comes mostly from **2014–2016**. The models of those years were trained on only 6–10 years of data, traded about weekly and lost in calm, rising markets.
+   - From 2018 the retrained H1 models mostly hold (0–15 orders a year); H2 trades more again in 2022–23. Both still sit partly out of the market (75–81 % exposure on average). In the strong years (2019, 2021) that costs EUR 950–1,750 a year of missed gains.
+2. **The bear year 2022 is the only consistent bright spot.** Both winners lost EUR 1,260–1,540 less than buy-and-hold. In the 2018 sell-off they lost as much or more, so this is not reliable protection.
+3. **The low-risk agent shows what working timing would look like, and why one good year is not enough.**
+   - In 2022 it was nearly flat (+EUR 72 while buy-and-hold lost EUR 3,424), and it had the smallest drawdown (26 % vs 33 %).
+   - But it also missed more than half of the 2020 rebound, and it still ends EUR 1,600 below holding.
+   - On the 26-ETF portfolio the same agent ends *below* the representative one (EUR 12,126). Its 2022 escape was not a skill that holds across assets.
+4. **The high-risk agent shows that activity is not skill.** It traded almost twice a week (850 orders).
+   - It amplified the good years (2020: +EUR 3,060 vs +2,044) and dodged most of 2018.
+   - But it lost more than buy-and-hold in 2022. On the 26-ETF portfolio it lost money overall (EUR 9,429 after 10,448 orders).
+5. **Selection matters.** The two contrast agents and the best H2 seed were picked after looking at all 40 agents, so they show the spread, not evidence. The representative agents are the honest numbers.
+
+*This section follows one continuous investor over the whole period. The tables above report medians over the 2-year blocks. For buy-and-hold on the 26 ETFs that is a Sharpe ratio of 0.67 per block, against 0.48 over the whole period here: different statistics, same verdict.*
+
+## v2 realism check — is there exploitable 1–4-week timing in these ETFs? (2026-10-15)
+
+After the search finalists failed on real data, the owner asked for a realism check (PROTOCOL Part II §V12.1 item 25, no trials). It has three parts.
+
+**1. What the real data shows** (development period 2007-07 → 2023-09 only; the median over the 26 training ETFs):
+
+| Variance ratio of k-day returns (1 = no persistence) | 2 | 5 | 10 | 20 | 60 days | Lag-1 autocorrelation |
+|---|---|---|---|---|---|---|
+| All years | 0.92 | 0.87 | 0.82 | 0.83 | 0.76 | −0.08 |
+| Without the 2008–09 and 2020 H1 crises | 0.97 | 0.93 | 0.85 | 0.79 | 0.66 | −0.03 |
+| 2013–2019 only | 0.99 | 0.96 | 0.91 | 0.85 | 0.66 | −0.01 |
+| 2020–2023 only | 0.90 | 0.95 | 0.93 | 0.95 | 0.68 | −0.10 |
+| Commodities (GLD, USO, DBC) | 1.00 | 1.01 | 1.03 | 1.10 | 1.48 | +0.00 |
+| *Synthetic W-swing, for comparison* | *1.02* | *1.08* | *1.17* | *1.28* | *1.48* | – |
+
+- The equity and bond ETFs **mean-revert** over weeks to months.
+  - The 1-day reversal is mostly a crisis effect.
+  - Outside crises the reversion builds up slowly over 2–12 weeks.
+  - It also changes over time: weak at 1–4 weeks in 2020–23.
+- **Commodities trend** instead.
+- Our swing world (W-swing) had the opposite structure: trends at 1–4 weeks.
+
+**2. A synthetic world with the measured reversion (W-revert)**
+- Each price is a random walk plus a transitory component, fitted to the curve without the crises: 41 % of the daily variance is transitory, with a half-life of 6.8 days. The simulated curve is 0.98/0.94/0.88/0.80/0.68.
+- An oracle that knows this process (a Kalman filter, contrarian) beats buy-and-hold by **+0.25 Sharpe at 5 bp and +0.14 at 11 bp**, trading 19 times a year.
+- Our learners on that world (seeds 0–9, 5 bp, no trials):
+
+| W-revert, median over 10 seeds | Gain over buy-and-hold | Share of the oracle's gain | Turns / yr | Seeds > +0.02 | W-null gain (turns / yr) |
+|---|---|---|---|---|---|
+| **c00** (the search winner) | **+0.23** | **82 %** | 14.7 | 9 / 10 | +0.00 (2.1) |
+| V1b (buy-and-hold head start) | +0.05 | 18 % | 6.3 | 6 / 10 | +0.00 (0.5) |
+| *oracle* | *+0.28* | *100 %* | *18.9* | | |
+
+**3. The decisive test: the estimated oracle on the real ETFs** (descriptive baseline `mean_reversion`, not a trial):
+- The same contrarian rule, with its parameters fitted to each ETF's *own* returns *before* each validation block, and the 11 bp cost band.
+
+| Median Sharpe | 0 bp | 10 bp | Turns / yr | Exposure | Typical hold |
+|---|---|---|---|---|---|
+| 26 ETFs (H1 set): contrarian rule | 0.51 | 0.29 | 19.6 | 63 % | 17 days |
+| 26 ETFs: buy-and-hold | 0.67 | 0.67 | 0.5 | 97 % | – |
+| 7 leave-out ETFs: contrarian / buy-and-hold | 0.44 / 0.53 | 0.24 / 0.53 | 23 | 59 % | 12 days |
+| SPY + EFA, neo-broker: contrarian / buy-and-hold | | 0.26 / 0.59 | 28 | 55 % | 11 days |
+
+- Per fold (10 bp), contrarian vs buy-and-hold: F1 0.02 vs 0.01, F2 1.14 vs 1.45, F3 0.29 vs 0.67, F4 0.55 vs 0.69, F5 −0.45 vs −0.21.
+
+### What this means
+
+1. **The learner is not the bottleneck.** Where a 1–4-week pattern is stable, c00 learns it: 82 % of the oracle in W-revert, and 77 % in W-swing, which has the opposite pattern. The search found a capable timing learner.
+2. **The data is the limit.** The mean reversion that is visible over the whole development period cannot be exploited out of sample.
+   - A rule estimated on past data trades on the owner's horizon (17-day holds) but loses to buy-and-hold **even before costs** (0.51 vs 0.67) and in 4 of 5 folds.
+   - The reversion is too weak and too unstable (strong in crises and in 2013–19, weak in 2020–23) to pay for being out of rising markets 37 % of the time.
+3. **Together with M1** (momentum and MACD below buy-and-hold) and the H trials, this is consistent evidence: **1–4-week timing of these broad ETFs is not supported by the data at realistic costs.** In both directions, trend and reversal, the timing signal is smaller than the drift lost by stepping aside plus the costs.
+4. **Different asset classes behave differently** (commodities trend, equities and bonds revert). One shared policy has to average over opposite patterns.
+
+### Improvement ideas
+
+- *Needs a trial:* an asset-class input (equity / bond / commodity / real estate), so one network can learn class-specific timing, such as momentum in commodities and reversion in equities. The data shows the patterns differ in sign.
+- *Objective (owner decision):* since 1–4-week timing does not pay at these costs, more promising goals are **risk control** (H3, the drawdown hypothesis: lower drawdown at the same Sharpe) or **cheaper execution** (fewer, larger decisions; the weekly-decision variant 3w).
+- *Data (owner decision, own protocol):* where the short-horizon structure is stronger, e.g. the relative (market-neutral) residuals of Track B / H2, which revert by construction. M4 found the residual features weak as *inputs* for direction timing, but they have not been tested as the *target* of a long-short strategy.
+
+## v2 Step 3 — the V3 signal pack on real data (2026-10-15)
+
+V3 = the reference V4 (V1b's learner with the buy-and-hold head start, 81-year pretraining, 50 % fine-tuning) plus the signal pack of PROTOCOL Part II §V6.3 / §V12.1 item 26:
+- **D1:** cross-asset context from training tickers only: bond and equity momentum, credit and term spreads, breadth, dispersion, correlation, momentum ranks.
+- **D2:** multi-horizon trend, MACD at three scales, Bayesian changepoints.
+- **D3:** auxiliary prediction heads.
+
+10 seeds × 5 folds, **trial 24** (N_trials 24 of 26). Full report: [`experiments/reports/V2_3.md`](experiments/reports/V2_3.md).
+
+| Median (26 ETFs) | Sharpe @ 10 bp (IQR) | @ 0 bp | Turnover / yr | Timing IC | Leave-out | ^GDAXI | SPY + EFA neo-broker | Deflated Sharpe | G-lag |
+|---|---|---|---|---|---|---|---|---|---|
+| **V3** | 0.34 (0.67) | 0.54 | 0.56 | −0.011 | 0.31 | 0.20 | 0.59 | 0.65 | pass (+0.03) |
+| V4 (reference) | 0.67 (0.68) | 0.67 | 0.49 | −0.001 | 0.53 | 0.39 | 0.59 | 0.73 | pass |
+| *buy-and-hold* | *0.67* | *0.67* | *0.49* | – | *0.53* | *0.39* | *0.59* | | |
+
+- **Per fold, V3 vs V4:** F1 0.01 / 0.01, F2 0.98 / 1.29, F3 0.67 / 0.67, F4 0.34 / 0.69, F5 −0.21 / −0.21.
+- **Paired against V4 over the 50 seed-fold runs:** median Δ +0.00 (p = 0.98), mean Δ −0.08.
+  - In 24 runs V3 is identical to V4 (Sharpe within 0.005; 17 exactly).
+  - In **17 runs it trades** (median 18 turns/yr, 77 % exposure) and these runs lose **−0.32 Sharpe on average** (F2 −0.39, F4 −0.43, F1 +0.09).
+- **§V8:** not adopted (Δ 0.00 with p 0.98; turnover +14 %, seed IQR +267 %, timing IC −0.01).
+- **HV3** (the signal pack produces gross skill: 0 bp Sharpe > buy-and-hold): **not met** (0.54 vs 0.67).
+
+### What this means
+
+1. **More information did not create timing skill.** The richer inputs made the agent confident enough to deviate from buy-and-hold in a third of the runs, and those deviations lost money. Its timing IC is slightly negative.
+2. **This agrees with the realism check:** the inputs describe the market well (trends, changepoints, cross-asset context), but none of them predicts 1–4-week moves of these ETFs well enough to beat holding.
+3. **The seeds disagree more** (seed IQR +267 %). The context inputs did not exist in the 1926–2007 pretraining, so the network learns them only in the short fine-tuning.
+4. **Stopping rule 2 (§V8) is reached.** After Step 3, no configuration has a gross median Sharpe above buy-and-hold:
+   - best V4 0.672 = buy-and-hold 0.672;
+   - V1b 0.66; H1nb 0.64; H1 0.59; R0′ 0.58; V3 0.54.
+
+   The protocol says: stop development, report "no exploitable timing signal with these inputs", and recommend not spending the test period.
+
+### Improvement ideas
+
+- *No trial:* screen inputs before RL. Measure each input's rank correlation with the next 5- and 20-day returns on the training folds only. If no input predicts, no reinforcement learner can time with it. This is a cheap filter for any future signal idea.
+- *Needs a trial or a new protocol:* see the wrap-up below (asset-class input, risk-control objective, Track B residuals).
+
+## v2 wrap-up toward M5 (2026-10-15)
+
+| Question | Answer from v1 + v2 (24 trials, many synthetic screens) |
+|---|---|
+| Can the agent stop losing money to noise trading? | **Yes.** The V1 decision structure (target exposures, an exact cost band, exogenous replay, gated heads) removed the overtrading of v1 (0.43 → 0.64–0.67). |
+| Can it learn timing that exists? | **Yes, on synthetic data.** The search winner c00 captures 60–82 % of the oracle's gain in regime, swing and reversion worlds. |
+| Is there exploitable timing in the 26 ETFs at 10 bp? | **No evidence.** No configuration beats buy-and-hold even gross (best = buy-and-hold itself). Simple rules fail too: momentum, MACD, vol-target and the estimated mean-reversion rule. |
+| What is the best configuration (§V8)? | **V4**, the adopted reference with the highest validation median: 0.6673 = buy-and-hold 0.6673. It passes G-lag. In 35 of 50 runs it is identical to buy-and-hold (Sharpe within 0.005; 30 exactly). |
+| Does it meet the M5 request rule (validation median ≥ buy-and-hold)? | Formally yes (equal). But an M5 test of V4 would compare buy-and-hold with itself, and H1 (beat buy-and-hold) cannot pass. |
+| Stopping rule 2? | **Reached:** no gross median Sharpe above buy-and-hold. The protocol recommends not spending the test period. |
+
+**Trial budget:** 24 of 26 used, 2 left. **The test period 2023-10 → 2026-09 is untouched and locked.** The decision on M5 is the owner's.

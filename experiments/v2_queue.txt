@@ -56,3 +56,19 @@ python -c "from harness import hpo; import sys; sys.exit(0 if hpo.real_data_allo
 python -c "from harness import hpo; import sys; sys.exit(0 if hpo.real_data_allowed() else 1)" && python -u scripts/run_agent.py --config config/v2/H1nb.yaml --workers 12 > experiments/runs/v2_H1nb_train.log 2>&1
 python -c "from harness import hpo; import sys; sys.exit(0 if hpo.real_data_allowed() else 1)" && python -u scripts/run_agent.py --config config/v2/H2nb.yaml --workers 12 > experiments/runs/v2_H2nb_train.log 2>&1
 python -c "from harness import hpo; import sys; sys.exit(0 if hpo.real_data_allowed() else 1)" && python -u scripts/analyze_v2.py --step H --trials v2_H1 v2_H2 v2_H1nb v2_H2nb --reference v2_V4 --workers 12 --threads 2 > experiments/runs/v2_H_report.log 2>&1
+# --- 2026-10-08, owner request (PROTOCOL Part II §V12.1 item 24, v2.0.7): AHL-Gaussian vs fixed support on c00/c19/c25, seeds 20-29, full budget (no trials), ~4.2 h
+python -u scripts/run_agent.py --config config/v2/V1b.yaml --hpo-screen support --workers 12 > experiments/runs/v2_screen_support.log 2>&1
+# --- 2026-10-08, owner decision (PROTOCOL v2.0.8): the 4 real-data trials of §V12.1 item 23 without the guard; N_trials 19 -> 23 of 26 (~3.3 h)
+python -u scripts/run_agent.py --config config/v2/H1.yaml --workers 12 > experiments/runs/v2_H1_train.log 2>&1
+python -u scripts/run_agent.py --config config/v2/H2.yaml --workers 12 > experiments/runs/v2_H2_train.log 2>&1
+python -u scripts/run_agent.py --config config/v2/H1nb.yaml --workers 12 > experiments/runs/v2_H1nb_train.log 2>&1
+python -u scripts/run_agent.py --config config/v2/H2nb.yaml --workers 12 > experiments/runs/v2_H2nb_train.log 2>&1
+python -u scripts/analyze_v2.py --step H --trials v2_H1 v2_H2 v2_H1nb v2_H2nb --reference v2_V4 --workers 12 --threads 2 > experiments/runs/v2_H_report.log 2>&1
+# --- 2026-10-15, owner command: realism check (PROTOCOL Part II §V12.1 item 25, v2.0.9; no trials)
+python -c "from harness.experiment import run_experiment; r = run_experiment('config/experiments/baseline_mean_reversion.yaml', notes='descriptive baseline, realism check (PROTOCOL Part II item 25)'); print(r.trial_id, r.summary['train@10bp']['sharpe_median'])" > experiments/runs/v2_realism_baseline.log 2>&1
+python -u scripts/run_agent.py --config config/v2/H1.yaml --synthetic --worlds W-null W-revert --workers 12 --seeds 0 1 2 3 4 5 6 7 8 9 --set name=v2_realism_c00 evaluation.costs.primary_bps=2 evaluation.costs.half_spread_bps=3 > experiments/runs/v2_realism_c00.log 2>&1
+python -u scripts/run_agent.py --config config/v2/V1b.yaml --synthetic --worlds W-null W-revert --workers 12 --seeds 0 1 2 3 4 5 6 7 8 9 --set name=v2_realism_V1b evaluation.costs.primary_bps=2 evaluation.costs.half_spread_bps=3 > experiments/runs/v2_realism_V1b.log 2>&1
+# --- 2026-10-15, owner command: Step 3, the V3 signal pack (PROTOCOL Part II §V12.1 item 26, v2.0.10); +1 trial -> N_trials 24 of 26
+python -u scripts/run_agent.py --config config/v2/V3.yaml --pretrain --workers 10 > experiments/runs/v2_V3_pretrain.log 2>&1
+test -f experiments/runs/pretrain/v2_V3/pretrain.json && python -u scripts/run_agent.py --config config/v2/V3.yaml --workers 12 > experiments/runs/v2_V3_train.log 2>&1
+python -u scripts/analyze_v2.py --step 3 --trials v2_V3 --reference v2_V4 --workers 12 --threads 2 > experiments/runs/v2_3_report.log 2>&1
