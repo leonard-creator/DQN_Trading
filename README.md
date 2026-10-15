@@ -22,7 +22,7 @@ The research question: *does the agent beat simple baselines net of costs, over 
 - **v2 Step 1 done (2026-10-07):** V1b is adopted over R0′ (0.64 vs 0.43, +0.12, p < 0.001). It has stopped the noise trading, but on real data it is ≈ buy-and-hold (0.67): 97 % invested, no timing.
 - **v2 Step 4 done (2026-10-07):** V4 (V1b + 81-year pretraining) scores 0.67 = buy-and-hold. It is adopted, because its seed spread fell by 91 %, but it shows no timing. N_trials is now 19 of 26.
 - **Synthetic screen of the owner's ideas (2026-10-07, no trials):** 40-day targets change nothing measurable. A 4× wider network learns twice the gross timing but trades noise (W-null −0.13), so width needs regularisation.
-- **Next (owner-approved plan):** a hyperparameter search on synthetic worlds only, including a new 1–4-week swing world, then the best two settings on real data as 4 trials.
+- **Hyperparameter search (2026-10-08, synthetic, no trials):** the winner c00 (HL-Gauss, 5-day targets, 4× network, 10 gated heads) captures 60–77 % of the oracle's gain. A follow-up screen showed that AHL-Gaussian's adaptive value range does not help. **On real data (trials 20–23) the two finalists lose to buy-and-hold** (0.49 / 0.43 vs 0.67). Real ETFs mean-revert at 1–4 weeks, unlike the synthetic swing world. N_trials is 23 of 26.
 - Details: [`RESULTS.md`](RESULTS.md), plan summary in [`docs/03_extracted_plan.md`](docs/03_extracted_plan.md) §8.
 
 | Document | What it is |
@@ -148,6 +148,107 @@ These plots come from the original agent. They were made with one seed, no basel
 ## Change report
 
 Newest entry first. Each entry says what changed, why, and what was verified.
+
+### 2026-10-15 (afternoon) — provenance scripts for the v2 numbers, number corrections, clean-up
+
+**Why:** the owner asked to remove the git-ignored `.dev_v2/` folder. Its scratch scripts had produced numbers in RESULTS.md that no committed script reproduced, so they became committed provenance scripts first.
+
+**Added** `experiments/reports/v2_provenance/`. The scripts do no training; they read the logs or the stored run outputs and print the numbers. Every printed number was checked against RESULTS.md and PROTOCOL.md.
+- `realism_measure.py`: variance ratios and autocorrelations of the 26 ETFs (realism check, table 1).
+- `realism_fit.py`: the W-revert fit (s = 0.407, φ = 0.904), the variance ratios of the synthetic worlds, and the W-revert oracle (+0.25 at 5 bp, +0.14 at 11 bp).
+- `calibrate_swing.py`: the W-swing calibration grid of §V12.1 item 23.
+- `euro_view.py`: the "In euros" tables, from the stored decisions; `--scan` lists all 40 agents.
+- `synthetic_stats.py`: the owner-idea screen, the ingredient table, round 3, the AHL screen counts and the realism screens.
+- `real_data_stats.py`: the wrap-up medians, V4 vs buy-and-hold, V3's deviating runs, and the `mean_reversion` baseline per set and fold.
+
+**Corrected in RESULTS.md** (conclusions unchanged):
+- Variance ratios of the synthetic worlds at 5/10/20 days: W-swing 1.08/1.17/1.28 (was 1.08/1.16/1.24) and W-null 1.00/0.99/1.01 (was 1.01/0.97/0.94). The old values came from an unrecorded check. The new ones use one defined path (40,000 bars, seed 1), like the W-revert curve. The same W-swing value is fixed in the 2026-10-09 entry below.
+- Realism check, W-revert table: the column counts seeds that gain more than +0.02, which is how 9/10 and 6/10 were counted; the header said "> 0".
+- "Identical" now states its tolerance: V4 vs buy-and-hold in 35 of 50 runs within 0.005 Sharpe (30 exactly); V3 vs V4 in 24 of 50 (17 exactly).
+
+**Clean-up (owner request):**
+- Removed: the Python caches, the local `wandb/` folder (legacy runs of July 2026, synced online), `NEW_PROTOCOL.md` (the v2 draft, merged into PROTOCOL Part II on 2026-10-06) and the AHL-Gaussian paper PDF (the screen is done and cited). None of them was tracked.
+- `.dev_v2/` is removed once these changes are committed. Its code equals the repository, and its scratch scripts are now the provenance scripts above.
+- Kept: all run outputs in `experiments/runs/`, the legacy single-asset code and data (owner decision), `graphs/` (cited by the PROTOCOL contamination statement) and `_templates/`.
+
+HANDOVER.md is untouched (owner rule). At the next handover update, its "W-swing trends (1.24)" and its list of untracked owner files get fixed.
+
+### 2026-10-15 — handover; realism check; V3 signal pack implemented and queued (PROTOCOL v2.0.9, v2.0.10)
+
+**Owner command (2026-10-15):** update the handover; run the realism check; run the V3 signal pack as the last untested protocol bundle; wrap up towards M5; ask the owner before M5.
+
+**Realism check** (no trials; RESULTS.md, "v2 realism check"):
+- Real ETFs mean-revert over weeks to months (variance ratio 0.66 at 60 days outside crises); commodities trend.
+- A synthetic world with that structure (W-revert): the search winner c00 learns 82 % of the oracle's gain.
+- On the real ETFs, the same contrarian rule with parameters estimated before each block loses to buy-and-hold even before costs (0.51 vs 0.67).
+- So the data, not the learner, is the limit for 1–4-week timing.
+
+**Added**
+- `harness/synthetic.py`: the world **W-revert** (random walk + a transitory AR(1) component, fitted to the measured variance ratios) and `kalman_revert`, the contrarian Kalman rule shared by its oracle and the real-data baseline.
+- `harness/baselines.py`: the descriptive baseline `mean_reversion` (the estimated W-revert oracle), with `config/experiments/baseline_mean_reversion.yaml`, logged as a baseline row.
+- **V3 signal pack** (§V6.3, item 26):
+  - `rl/features_m4.py`:
+    - D1 cross-asset context from training tickers only (TIP replaces the leave-out IEF), joined as-of with the Q1 lag;
+    - D2 multi-horizon trend, MACD at three scales and BOCPD changepoints;
+    - flags `ctx_avail` / `sig_avail`;
+    - bounded inputs mapped to 2x − 1.
+  - `rl/exogenous.py`: D3 auxiliary heads (`algo.aux_heads`, weight 0.1).
+  - `config/v2/V3.yaml` = V4 + the signal pack (43 inputs).
+- Tests: 8 new tests (W-revert oracle, the baseline, D1 causality and leave-out exclusion, the Q1 lag of the context, D1 masking, BOCPD, the auxiliary heads). The suite has **143 passed**.
+
+**Fixed before any run:** a saturated changepoint "age" made the trailing z-score undefined, which would have switched off the whole D2 group. The new tests caught it; bounded inputs are no longer z-scored.
+
+**V3 result (trial 24, finished 11:50; RESULTS.md "v2 Step 3"):**
+- 0.34 at 10 bp and 0.54 at 0 bp, against V4 / buy-and-hold 0.67; not adopted.
+- Identical to V4 in 24 of 50 runs (Sharpe within 0.005); the 17 runs where the richer inputs made it trade lose −0.32 on average.
+- HV3 is not met, and **stopping rule 2 is reached**: no configuration beats buy-and-hold even gross. The protocol recommends not spending the test period.
+- N_trials is 24 of 26. The wrap-up toward M5 is in RESULTS.md; the M5 decision is with the owner.
+
+**Changed:** `HANDOVER.md` rewritten on the owner's command; `PROTOCOL.md` items 25 and 26, change-log rows v2.0.9 and v2.0.10.
+
+### 2026-10-09 — real-data results of the search finalists (trials 20–23)
+
+**Results** (RESULTS.md, "v2 Step H on real data"; `experiments/reports/V2_H.md`):
+- H1 (c00) 0.49, H2 (c25) 0.43, H1nb 0.36, H2nb 0.27 against V4 / buy-and-hold 0.67 on the 26 ETFs at 10 bp. None is adopted (§V8), and V4 stays the reference.
+- The agents trade 17–32 times a year with timing IC ≈ 0.005. They trail buy-and-hold even before costs.
+- Gate G-lag fails for H1.
+- N_trials is now 23 of 26.
+- Real ETFs mean-revert at 1–4 weeks (variance ratio 0.83 at 20 days, development data), while W-swing trends (1.28). The search optimised for the wrong structure.
+
+**Changed:** `RESULTS.md`: a new section and overview row, and an "In euros" illustration requested by the owner. It covers EUR 10,000 in SPY + EFA at the neo-broker, 2014 → 2023-09, profit and orders per year, buy-and-hold vs the two winners' representative agents and a low-risk and a high-risk agent, computed once from the stored decisions with no retraining. HANDOVER untouched (owner rule).
+
+### 2026-10-08 — search results; AHL-Gaussian follow-up screen (PROTOCOL v2.0.7)
+
+**Results** (RESULTS.md, "v2 Step H"; no trials, N_trials 19):
+- The search finished at 02:24. The winner **c00** (HL-Gauss, 5-day targets, γ 0.99, 4× network, 10 gated heads, lr 1e-4) captures 77 % of the oracle's gain in W-swing and 60 % in W-regime.
+- The queue's guard paused the 4 real-data trials, because the second finalist c25 trades noise in W-null at full budget.
+
+**Owner decisions (2026-10-08):**
+- test AHL-Gaussian (Chen et al., ICLR 2025 submission) against the leading settings before choosing the real-data configurations;
+- EXPLANATIONS.md is updated only for new terms or on request;
+- results are committed separately from code.
+
+**Added**
+- `rl/exogenous.py`: `algo.loss: ahl_gauss` (off by default).
+  - The HL-Gauss value range [c − ξ, c + ξ] has a learnt half-width ξ: it starts at `ahl_xi0` = 3 and takes one gradient-descent step per update (`ahl_lr`) on the projection error of the batch's targets.
+  - ξ lives in an identity layer `SupportWidth`, so it is saved, selected and restored with the weights. The training curve logs `xi`; `info.json` stores `ahl_xi` (selected, last).
+- `harness/hpo.py`: `SCREENS` + `screen()` for follow-up screens of chosen settings and variants on fresh seeds (a section in `V2_hpo.md`); `scripts/run_agent.py --hpo-screen NAME`.
+- Screen `support` (§V12.1 item 24), queued 13:48, ≈ 4.2 h:
+  - settings c00, c19 and c25, each with the fixed range (`hl`), AHL with a step scaled to our update budget (`ahl`, 5e-2) and AHL with the paper's step (`ahlpaper`, 1e-3);
+  - seeds 20–29, full budget.
+- Tests: 3 new tests (AHL widening and save/restore, AHL end to end, the screen's configurations). The suite has **135 passed**.
+- `RESULTS.md`: the search section (scoreboard over the rounds, ingredient table, final round). `EXPLANATIONS.md`: a glossary of the winning setting's terms.
+
+**Screen result (finished 18:00, no trials; RESULTS.md, "Follow-up screen"):**
+- AHL-Gaussian does not improve the agent. The learnt range ends near the fixed one and times identically, but for c00 it trades noise in W-null.
+- The paper's narrow range captures more swing timing (+0.04 to +0.10) but also trades more noise.
+- c00 with the fixed range is the only clean and robust setting on the fresh seeds 20–29. c19 trades noise; c25 sits on the noise limit with every range.
+
+**Owner decision (2026-10-08, PROTOCOL v2.0.8):** run the 4 real-data trials with H1 = c00 and H2 = c25 (fixed value range) and their neo-broker twins, although c25 sits on the noise limit (the guard is overridden). A real-data smoke run of H2nb (not logged) passed. Queued at 19:19 (lines 62–66, ≈ 3.3 h): H1, H2, H1nb, H2nb, then the step-H report against V4 (`experiments/reports/V2_H.md`). N_trials 19 → 23 of 26.
+
+**Verified**
+- Mechanics check on W-swing: at the paper's step 1e-3, ξ grows only 3 → 3.6 in 5,000 updates (the paper had 0.5–2.5 M updates). At 5e-2 it reaches 5.0 after 1,000 updates and about 7 after 5,000, levelling off as in the paper's curves.
+- Fixed-range HL-Gauss is unchanged: the static path uses the same precomputed bins.
 
 ### 2026-10-07 (evening) — screen results, hyperparameter-search tooling, world W-swing (PROTOCOL v2.0.6)
 

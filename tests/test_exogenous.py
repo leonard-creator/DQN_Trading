@@ -230,3 +230,63 @@ def test_weight_decay_uses_adamw_and_prior_none_skips_the_buy_and_hold_start(syn
                     "train": {"transitions": 0, "update_ratio": 1.0, "eval_every_updates": 10}}
     agent, _, _, _ = train_exogenous(cfg, data, [(10, 250)], [(260, 290)], 0, [0.0011])
     assert np.all(agent.online.layers[-1].get_weights()[1] == 0.0)           # Keras' zero bias, no prior
+
+
+def test_ahl_gauss_widens_a_too_narrow_support_and_keeps_xi_with_the_weights(tmp_path):
+    """AHL-Gaussian: xi grows while targets fall outside [c - xi, c + xi], stays when they are inside,
+    and is saved and restored with the network's weights."""
+    rng = np.random.default_rng(1)
+    m = rng.standard_normal((8, 5, 2)).astype(np.float32)
+    rew = (5.0 + rng.standard_normal((8, 5))).astype(np.float32)          # targets around 5
+    algo = {**ALGO, "loss": "ahl_gauss", "heads": 2, "ahl_lr": 0.05}
+    narrow, wide = (UAgent(5, 2, 4, NET, algo, total_updates=20, support=s) for s in ((-1.0, 1.0), (-50.0, 50.0)))
+    for _ in range(20):
+        for agent in (narrow, wide):
+            agent.learn(m, rew, m, np.full(8, 0.1), np.zeros(8))
+    assert float(narrow.xi.numpy()) > 2.0                                   # widened from 1
+    assert float(wide.xi.numpy()) == pytest.approx(50.0, abs=0.5)           # already covers the targets
+    narrow.online.save_weights(str(tmp_path / "w.h5"))
+    again = UAgent(5, 2, 4, NET, algo, total_updates=1, support=(-1.0, 1.0))
+    again.online.load_weights(str(tmp_path / "w.h5"))
+    assert float(again.xi.numpy()) == pytest.approx(float(narrow.xi.numpy()))
+    np.testing.assert_allclose(again.u_values(m), narrow.u_values(m), rtol=1e-5, atol=1e-5)
+
+
+def test_ahl_gauss_trains_end_to_end_from_a_confined_support(synthetic_agent_cfg, tmp_path):
+    from rl.exogenous import train_exogenous
+    rng = np.random.default_rng(9)
+    close = 100 * np.cumprod(1 + 0.01 * rng.standard_normal(300))
+    data = MarketData(["X"], [close], [rng.standard_normal((300, 2))], 5, [1.0], sigmas=[np.full(300, 0.01)])
+    cfg = {**synthetic_agent_cfg}
+    algo = {**ALGO, "loss": "ahl_gauss", "bins": 11, "heads": 2, "n_step": 3, "batch_size": 8}
+    cfg["agent"] = {**cfg["agent"], "network": NET, "anchor_eta": 0.0, "prior": "none", "algo": algo,
+                    "env": {"reward_clip": 10.0}, "train": {"transitions": 40, "update_ratio": 1.0, "eval_every_updates": 20}}
+    agent, info, curve, _ = train_exogenous(cfg, data, [(10, 250)], [(260, 290)], 0, [0.0011])
+    lo, hi = info["hl_support"]
+    assert hi - lo == pytest.approx(6.0) and info["ahl_xi"][0] > 0 and np.isfinite(curve["xi"]).all()   # xi0 = 3
+    agent.online.save_weights(str(tmp_path / "w.h5"))
+    again = UAgent(5, 2, 4, NET, algo, total_updates=1, support=info["hl_support"])      # as rl/diagnostics does
+    again.online.load_weights(str(tmp_path / "w.h5"))
+    m = data.windows(np.arange(20, 30))
+    np.testing.assert_allclose(again.u_values(m), agent.u_values(m), rtol=1e-5, atol=1e-5)
+
+
+def test_auxiliary_heads_train_and_stay_out_of_the_decision_network(synthetic_agent_cfg, tmp_path):
+    """V3 (D3): the auxiliary head shares the encoder, its 20-bar labels shrink the sample range, and the saved
+    decision network is the same as without auxiliary heads."""
+    from rl.exogenous import train_exogenous
+    rng = np.random.default_rng(12)
+    close = 100 * np.cumprod(1 + 0.01 * rng.standard_normal(300))
+    data = MarketData(["X"], [close], [rng.standard_normal((300, 2))], 5, [1.0], sigmas=[np.full(300, 0.01)])
+    cfg = {**synthetic_agent_cfg}
+    algo = {**ALGO, "loss": "mse", "n_step": 3, "batch_size": 8, "aux_heads": 3}
+    cfg["agent"] = {**cfg["agent"], "network": NET, "anchor_eta": 0.01, "algo": algo, "env": {"reward_clip": 10.0},
+                    "train": {"transitions": 30, "update_ratio": 1.0, "eval_every_updates": 15}}
+    agent, info, curve, _ = train_exogenous(cfg, data, [(10, 250)], [(260, 290)], 0, [0.0011])
+    assert info["samples"] == 250 - 10 - 20 + 1 and agent.aux(data.windows(np.arange(20, 24))).shape == (4, 3)
+    assert np.isfinite(curve["inner_sharpe"]).all()
+    agent.online.save_weights(str(tmp_path / "w.h5"))
+    plain = UAgent(5, 2, 4, NET, {k: v for k, v in algo.items() if k != "aux_heads"}, total_updates=1)
+    plain.online.load_weights(str(tmp_path / "w.h5"))
+    m = data.windows(np.arange(20, 30))
+    np.testing.assert_allclose(plain.u_values(m), agent.u_values(m), rtol=1e-5, atol=1e-6)

@@ -20,7 +20,8 @@ never as a trial. --calibrate only checks the worlds' calibration rule (no train
 
 --hpo runs the hyperparameter search on the synthetic worlds around the configuration
 (PROTOCOL Part II §V12.1 item 23, harness/hpo.py): never a trial, results in
-experiments/reports/v2_hpo/ and V2_hpo.md.
+experiments/reports/v2_hpo/ and V2_hpo.md. --hpo-screen NAME runs a follow-up screen of the
+search's settings defined in harness/hpo.SCREENS (§V12.1 item 24), e.g. "support" (AHL-Gaussian).
 """
 
 import argparse
@@ -51,6 +52,7 @@ def main():
     p.add_argument("--calibrate", action="store_true", help="v2 Step 0c calibration rule only")
     p.add_argument("--pretrain", action="store_true", help="v2 Step 4: long-history pretraining into agent.pretrain.dir")
     p.add_argument("--hpo", action="store_true", help="v2 hyperparameter search on the synthetic worlds (no trial)")
+    p.add_argument("--hpo-screen", metavar="NAME", help="follow-up screen harness/hpo.SCREENS[NAME] (no trial)")
     args = p.parse_args()
     sets = {}
     for kv in args.set:                                  # a.b.c=value -> {"a": {"b": {"c": value}}}
@@ -60,9 +62,12 @@ def main():
         for k in path:
             node = node.setdefault(k, {})
         node[last] = yaml.safe_load(value)
-    if args.hpo:
+    if args.hpo or args.hpo_screen:
         from harness import hpo
-        print(hpo.run(load_config(args.config, sets), workers=args.workers).to_string(index=False))
+        cfg = load_config(args.config, sets)
+        res = hpo.screen(cfg, args.hpo_screen, workers=args.workers) if args.hpo_screen else \
+            hpo.run(cfg, workers=args.workers)
+        print(res.to_string(index=False))
         return
     if args.pretrain:
         from harness import longhistory

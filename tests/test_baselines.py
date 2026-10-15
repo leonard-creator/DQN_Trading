@@ -3,14 +3,16 @@
 import numpy as np
 import pytest
 
-from harness.baselines import buy_and_hold, macd_crossover, momentum, random_agent, stable_seed
+from harness.baselines import buy_and_hold, macd_crossover, mean_reversion, momentum, random_agent, stable_seed
 
 RNG = np.random.default_rng(7)
 CLOSE = 100 * np.exp(np.cumsum(0.01 * RNG.standard_normal(600)))
 
 
 @pytest.mark.parametrize("fn", [lambda c: momentum(c, 60), lambda c: momentum(c, 20, allow_short=True),
-                                lambda c: macd_crossover(c, 12, 26, 9)])
+                                lambda c: macd_crossover(c, 12, 26, 9),
+                                # parameters are fitted on the returns up to the first decision (bar 300 < t)
+                                lambda c: mean_reversion(c, np.array([300]), 11e-4, min_history=100)])
 def test_no_lookahead_future_prices_do_not_change_past_exposure(fn):
     t = 400
     base = fn(CLOSE)
@@ -58,3 +60,17 @@ def test_stable_seed_does_not_depend_on_python_hash_randomisation():
 def zlib_crc(s):
     import zlib
     return zlib.crc32(s.encode())
+
+
+def test_mean_reversion_holds_without_reversion_and_steps_aside_after_rallies():
+    """Realism-check baseline (PROTOCOL Part II §V12.1 item 25): a trending random walk is simply held; on a
+    mean-reverting path (synthetic W-revert) the estimated rule is flat mainly after rallies."""
+    from harness import synthetic as sy
+    rng = np.random.default_rng(11)
+    trend = 100 * np.exp(np.cumsum(0.001 + 0.01 * rng.standard_normal(2000)))
+    assert mean_reversion(trend, np.array([1500]), 11e-4)[1500:].mean() > 0.8
+    r = sy.simulate("W-revert", 3000, 3)[0][:, 0]
+    close = 100 * np.cumprod(1 + r)
+    e = mean_reversion(close, np.array([2000]), 5e-4)[2000:]
+    past5 = np.log(close[2000:] / close[1995:-5])                      # return of the 5 days up to each decision
+    assert 0.3 < e.mean() < 0.98 and past5[e == 0].mean() > past5[e == 1].mean()

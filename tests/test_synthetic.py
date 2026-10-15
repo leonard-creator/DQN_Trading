@@ -203,3 +203,41 @@ def test_hpo_guard_pauses_the_real_data_trials_unless_both_finalists_qualify(tmp
                               ((0.4, 0.2), (40, 5), False)):
         pd.DataFrame({"id": ["c03", "c01"], "score": scores, "n_step": steps}).to_csv(path, index=False)
         assert hpo.real_data_allowed(out=str(tmp_path)) is ok
+
+
+def test_hpo_screen_crosses_the_chosen_settings_with_each_variant(monkeypatch, tmp_path):
+    """SCREENS['support']: c00, c19, c25 x {fixed HL-Gauss support, AHL (2 step sizes)} at the full budget."""
+    from harness import hpo
+    seen, out = [], tmp_path / "v2_hpo"
+    out.mkdir()
+    monkeypatch.setattr(hpo.sy, "run_many", lambda cfgs, seeds, worlds, workers, log, root:
+                        seen.append(cfgs) or _hpo_rows(cfgs, seeds, worlds))
+    pd.DataFrame(hpo.sample()).set_axis([f"c{i:02d}" for i in range(32)]).to_csv(out / "candidates.csv",
+                                                                                   index_label="id")
+    sc = hpo.screen(load_config("config/v2/V1b.yaml"), "support", out=str(out))
+    names = [c["name"] for c in seen[0]]
+    assert names == [f"support_{v}_{c}" for c in ("c00", "c19", "c25") for v in ("hl", "ahl", "ahlpaper")]
+    hl, ahl = seen[0][0]["agent"], seen[0][1]["agent"]
+    assert hl["algo"]["loss"] == "hl_gauss" and ahl["algo"]["loss"] == "ahl_gauss"
+    assert hl["train"]["transitions"] == 100000 and ahl["algo"]["ahl_lr"] == 0.05
+    assert {k: v for k, v in hl["algo"].items() if k != "loss"} == \
+        {k: v for k, v in ahl["algo"].items() if k not in ("loss", "ahl_lr")}  # only the loss differs
+    assert set(sc["variant"]) == {"hl", "ahl", "ahlpaper"} and "Screen 'support'" in (tmp_path / "V2_hpo.md").read_text()
+
+
+def test_revert_oracle_is_causal_and_steps_aside_after_a_rally():
+    """W-revert (§V12.1 item 25): the Kalman contrarian rule goes flat right after a sharp rally and uses
+    only the past."""
+    rng = np.random.default_rng(4)
+    y = 0.0004 + 0.01 * rng.standard_normal((800, 1))
+    y[400:405] += 0.02                                                   # a sharp 5-day rally
+    args = (0.0004, 0.9, 0.0077, 0.0062, 3e-5)
+    e = sy.kalman_revert(y, *args)[:, 0]
+    assert e[404] == 0.0 and e[300:400].mean() > 0.6
+    y2 = y.copy()
+    y2[501:] += 0.05
+    np.testing.assert_array_equal(e[:501], sy.kalman_revert(y2, *args)[:501, 0])
+    r = sy.simulate("W-revert", 20000, 2)[0]
+    lr = np.log1p(r[:, 0])
+    vr20 = np.convolve(lr - lr.mean(), np.ones(20), "valid").var() / (20 * lr.var())
+    assert vr20 < 0.9                                                    # mean-reverting at 20 days (data: 0.79)

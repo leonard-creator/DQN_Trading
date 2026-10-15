@@ -249,3 +249,22 @@ What each v2 component touches in the **current** code (state after M4, commit w
   - `calibrate(worlds=…)` also returns the oracle's turnover.
 - `rl/exogenous.py`: `hl_probs` + `UAgent(support=…)` (HL-Gauss, support stored in `info.json` as `hl_support`), `UAgent._network` (frozen random prior added to the output), AdamW (`algo.weight_decay`), `agent.prior: none`.
 - `rl/policy.cost_function(cfg)`: the costs an agent trains and decides under, including `agent.env.cost_positions`.
+
+**Follow-up screens and AHL-Gaussian (2026-10-08, §V12.1 item 24).**
+- `rl/exogenous.py`:
+  - `algo.loss: ahl_gauss`: the HL-Gauss bins span [c − ξ, c + ξ], with ξ learnt by one gradient step per update on the projection error (`UAgent._grid`, the ξ step at the end of `_train_step`);
+  - ξ is the weight of the identity layer `SupportWidth`, so `get_weights`/`save_weights` carry it;
+  - `info.json` stores the construction range (`hl_support`) and `ahl_xi`.
+- `harness/hpo.py`: `SCREENS` (named, versioned screen definitions) and `screen()`; entry point `scripts/run_agent.py --hpo-screen NAME`.
+
+**Realism check and V3 signal pack (2026-10-15, §V12.1 items 25–26).**
+- `harness/synthetic.py`: world W-revert (`REVERT`, a transitory AR(1) price component fitted to the measured variance ratios) and `kalman_revert`, the contrarian Kalman rule used by its oracle and by the real-data baseline.
+- `harness/baselines.py`: `mean_reversion`, a descriptive baseline (the estimated W-revert oracle: parameters fitted per ticker before each block); config `config/experiments/baseline_mean_reversion.yaml`.
+- `rl/features_m4.py`:
+  - D2 `trend_features` (vol-scaled returns, MACD at three scales, `bocpd` changepoints) with the flag `sig_avail`;
+  - D1 `context_frame` + as-of join `_asof` (Q1: strictly before for early-close tickers; training tickers only, TIP for the leave-out IEF) with the flag `ctx_avail`;
+  - bounded inputs (`BOUNDED_FEATURES`) mapped to 2x − 1 instead of z-scored.
+- `rl/exogenous.py`: D3 auxiliary heads (`algo.aux_heads`, `algo.aux_weight`), a linear head on the encoder output that is not part of the saved decision network.
+- `config/v2/V3.yaml` = V4 + the signal pack.
+
+**Provenance scripts (2026-10-15).** `experiments/reports/v2_provenance/` holds the scripts behind those RESULTS.md numbers that the generated step reports do not show: the realism check, the W-revert and W-swing calibrations, "In euros", screen counts and the wrap-up medians. They only read `experiments/*.csv`, `experiments/reports/v2_hpo/` and the stored run outputs, and are run from the repository root with `PYTHONPATH=.`.

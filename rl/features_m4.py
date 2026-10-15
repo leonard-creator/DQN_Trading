@@ -54,15 +54,44 @@ default, so every v1 trial keeps exactly its features:
         exists only from 1990; the long-history pretraining of Step 4, §V6.4).
     z   the trailing z-score needs `z_min_periods` = 126 bars (default for v2;
         expanding until the window is full). The window stays 252 bars as in M4.
+
+V3 signal pack (PROTOCOL Part II §V6.3; §V12.1 item 26), all optional by name:
+  D2 per ticker, return-derived (also in the long history):
+    tsr21 .. tsr252   log return over h bars / (EWMA-60 daily vol * sqrt(h)), h = 21, 63, 126, 252
+    macd8/16/32       (EWMA_S - EWMA_3S)(close) / 63-bar SD of the close, S = 8, 16, 32 (Lim et al. 2019)
+    cp21_*, cp126_*   Bayesian online changepoint detection (Adams & MacKay 2007) on r_t / sigma_t-1 with a
+                      Normal-Gamma prior (0, 1, 1, 1) and hazard 1/lambda, lambda = 21, 126; run length
+                      truncated at 500: `recent` = P(run length <= 5), `age` = min(E[run length] / lambda, 1)
+    flag sig_avail    1 once the ticker has `warmup_bars` of history; before that D2 is 0
+  D1 cross-asset context, from TRAINING tickers only (IEF is a leave-out ticker, so TIP replaces it):
+    bond_mom21/63/252 mean log return of TLT and TIP;  eq_mom21/63/252 the same for SPY and EFA
+    credit20/60       log return LQD - TIP;  term20/60  log return TLT - TIP
+    breadth           share of the factor tickers above their 200-bar SMA
+    dispersion        cross-sectional SD of the factor tickers' 21-bar log returns
+    corr60            average pairwise correlation of the factor tickers' daily returns over 60 bars
+    rank63, rank252   share of factor tickers whose 63/252-bar return is below the ticker's own
+    flag ctx_avail    1 where all context inputs exist (never in the long history, which has no ETFs)
+    The bounded features (changepoint scores, breadth, ranks; all in [0, 1]) are mapped to 2x - 1 instead of being
+    z-scored: a saturated score is constant for long stretches, where a trailing z-score is undefined.
+    Context values are joined AS-OF: the same day for tickers that close with the US market, the previous US
+    bar for early-close tickers (Q1), exactly like the VIX features.
 """
 
 import numpy as np
 import pandas as pd
 
-M4_FEATURES = ["log_ret", "p_sma20", "p_sma50", "bb_pctb", "rsi14", "macd_hist", "vol_rel20",
-               "atr14_p", "sigma20", "vix_lag1", "vix_chg_lag1", "resid", "resid_cum30", "resid_avail",
-               "vix_avail"]
-FLAG_FEATURES = ("resid_avail", "vix_avail")   # binary availability flags: never z-scored
+TREND_FEATURES = ("tsr21", "tsr63", "tsr126", "tsr252", "macd8", "macd16", "macd32",
+                  "cp21_recent", "cp21_age", "cp126_recent", "cp126_age")                     # D2
+CTX_FEATURES = ("bond_mom21", "bond_mom63", "bond_mom252", "eq_mom21", "eq_mom63", "eq_mom252", "credit20",
+                "credit60", "term20", "term60", "breadth", "dispersion", "corr60", "rank63", "rank252")   # D1
+CTX_TICKERS = ("TLT", "TIP", "LQD", "SPY", "EFA")
+M4_FEATURES = (["log_ret", "p_sma20", "p_sma50", "bb_pctb", "rsi14", "macd_hist", "vol_rel20",
+                "atr14_p", "sigma20", "vix_lag1", "vix_chg_lag1", "resid", "resid_cum30", "resid_avail",
+                "vix_avail"] + list(TREND_FEATURES) + ["sig_avail"] + list(CTX_FEATURES) + ["ctx_avail"])
+FLAG_FEATURES = ("resid_avail", "vix_avail", "sig_avail", "ctx_avail")   # binary availability flags: never z-scored
+# already bounded in [0, 1] (and often constant for long stretches, e.g. a saturated regime age, where a trailing
+# z-score would divide by zero): mapped to 2x - 1 instead of z-scored
+BOUNDED_FEATURES = ("cp21_recent", "cp21_age", "cp126_recent", "cp126_age", "breadth", "rank63", "rank252")
 RESID_FEATURES = ("resid", "resid_cum30")
 VIX_FEATURES = ("vix_lag1", "vix_chg_lag1")
 
@@ -161,6 +190,90 @@ def residual_returns(closes, factor_tickers, k=3, corr_window=252, beta_window=6
 
 
 # ---------------------------------------------------------------------------
+# V3 signal pack: D2 trend + changepoints (per ticker), D1 cross-asset context
+# ---------------------------------------------------------------------------
+def bocpd(x, lam, rmax=500, prior=(0.0, 1.0, 1.0, 1.0)):
+    """Bayesian online changepoint detection (Adams & MacKay 2007), filtering only (causal).
+
+    x: 1-D series (NaN = no update). Gaussian observations with unknown mean and precision, Normal-Gamma
+    prior (mu0, kappa0, alpha0, beta0), constant hazard 1/lam, run length truncated at rmax.
+    Returns (P(run length <= 5), min(E[run length] / lam, 1)) per bar.
+    """
+    from scipy.special import gammaln
+    mu0, k0, a0, b0 = prior
+    h = 1.0 / lam
+    p = np.array([1.0]); mu, kap, al, be = (np.array([v]) for v in prior)
+    recent, age = np.full(len(x), np.nan), np.full(len(x), np.nan)
+    for t, v in enumerate(x):
+        if np.isfinite(v):
+            nu, sc2 = 2 * al, be * (kap + 1) / (al * kap)              # Student-t predictive of each run length
+            lp = (gammaln((nu + 1) / 2) - gammaln(nu / 2) - 0.5 * np.log(nu * np.pi * sc2)
+                  - (nu + 1) / 2 * np.log1p((v - mu) ** 2 / (nu * sc2)))
+            w = p * np.exp(lp - lp.max())
+            p = np.concatenate(([w.sum() * h], w * (1 - h)))[:rmax + 1]   # changepoint, growth; truncate
+            p /= p.sum()
+            mu, kap, al, be = (np.concatenate(([mu0], (kap * mu + v) / (kap + 1))),
+                               np.concatenate(([k0], kap + 1)), np.concatenate(([a0], al + 0.5)),
+                               np.concatenate(([b0], be + kap * (v - mu) ** 2 / (2 * (kap + 1)))))
+            mu, kap, al, be = mu[:rmax + 1], kap[:rmax + 1], al[:rmax + 1], be[:rmax + 1]
+        recent[t] = p[:6].sum()
+        age[t] = min((np.arange(len(p)) * p).sum() / lam, 1.0)
+    return recent, age
+
+
+def trend_features(df):
+    """D2 raw features of one ticker (multi-horizon vol-scaled trend, MACD at three scales, BOCPD)."""
+    c = df["Close"].astype(float)
+    lr = np.log(c).diff()
+    sig = lr.ewm(span=60, min_periods=30).std()
+    out = pd.DataFrame(index=df.index)
+    for h in (21, 63, 126, 252):
+        out[f"tsr{h}"] = np.log(c / c.shift(h)) / (sig * np.sqrt(h))
+    for s_ in (8, 16, 32):
+        macd = c.ewm(span=s_, adjust=False).mean() - c.ewm(span=3 * s_, adjust=False).mean()
+        out[f"macd{s_}"] = (macd / c.rolling(63).std()).where(np.arange(len(c)) >= 3 * s_)
+    x = (lr / sig.shift(1)).to_numpy()
+    for lam in (21, 126):
+        out[f"cp{lam}_recent"], out[f"cp{lam}_age"] = bocpd(x, lam)
+    return out
+
+
+def context_frame(prices, factor_tickers):
+    """D1 global context on the union of the context tickers' dates, plus the factor tickers' 63/252-bar
+    returns (for the ranks); None if a context ticker is missing (e.g. the long history)."""
+    if not all(t in prices for t in CTX_TICKERS):
+        return None, None
+    names = sorted(set(factor_tickers) | set(CTX_TICKERS))
+    C = pd.concat({t: prices[t]["Close"] for t in names}, axis=1).sort_index().ffill()
+    L = np.log(C)
+    ret = lambda t, h: L[t] - L[t].shift(h)                                          # noqa: E731
+    out = pd.DataFrame(index=C.index)
+    for h in (21, 63, 252):
+        out[f"bond_mom{h}"] = (ret("TLT", h) + ret("TIP", h)) / 2
+        out[f"eq_mom{h}"] = (ret("SPY", h) + ret("EFA", h)) / 2
+    for h in (20, 60):
+        out[f"credit{h}"] = ret("LQD", h) - ret("TIP", h)
+        out[f"term{h}"] = ret("TLT", h) - ret("TIP", h)
+    F = C[list(factor_tickers)]
+    out["breadth"] = (F > F.rolling(200).mean()).astype(float).where(F.rolling(200).count() == 200).mean(axis=1)
+    out["dispersion"] = (np.log(F) - np.log(F.shift(21))).std(axis=1)
+    R = np.log(F).diff()
+    z = R / R.rolling(60).std()
+    n = z.notna().sum(axis=1)
+    out["corr60"] = ((n * z.mean(axis=1)).rolling(60).var() / n - 1) / (n - 1)       # Var(mean z) = (1 + (n-1) rho) / n
+    rets = {h: np.log(F) - np.log(F.shift(h)) for h in (63, 252)}
+    return out, rets
+
+
+def _asof(frame, dates, strict):
+    """Rows of `frame` (dates x cols) as of each date: the last row on or (strict) before it."""
+    idx = frame.index.searchsorted(pd.DatetimeIndex(dates), side="left" if strict else "right") - 1
+    vals = frame.to_numpy(dtype=float)[np.maximum(idx, 0)]
+    vals[idx < 0] = np.nan
+    return pd.DataFrame(vals, index=pd.DatetimeIndex(dates), columns=frame.columns)
+
+
+# ---------------------------------------------------------------------------
 # normalisation and assembly
 # ---------------------------------------------------------------------------
 def rolling_z(frame, window=252, min_periods=60):
@@ -200,6 +313,8 @@ def m4_raw_frames(prices, tickers, features, factor_tickers, vix=None, params=No
         raise ValueError("vix_avail needs both VIX features")
     features = [f for f in features if f not in FLAG_FEATURES]       # flags are derived after z-scoring
     early = set(p["early_close_tickers"])
+    ctx, ctx_rets = (context_frame(prices, factor_tickers) if any(f in CTX_FEATURES for f in features)
+                     else (None, None))
     resid = None
     if any(f in RESID_FEATURES for f in features):
         names = sorted(set(tickers) | set(factor_tickers))
@@ -221,6 +336,20 @@ def m4_raw_frames(prices, tickers, features, factor_tickers, vix=None, params=No
         if p["mask_volume"] and "vol_rel20" in raw:
             v = df["Volume"].astype(float)
             raw["vol_rel20"] = raw["vol_rel20"].where((v > 0) & (v.rolling(20).std() > 0))
+        if any(f in TREND_FEATURES for f in features):
+            raw = raw.join(trend_features(df))
+        if any(f in CTX_FEATURES for f in features):
+            if ctx is None:                                   # no context tickers (long history): unavailable
+                raw = raw.join(pd.DataFrame(np.nan, index=df.index, columns=list(CTX_FEATURES)))
+            else:
+                strict = t in early                           # Q1: early-close tickers see the previous US bar
+                raw = raw.join(_asof(ctx, df.index, strict))
+                own = np.log(df["Close"].astype(float))
+                for h, R in ctx_rets.items():
+                    mine = (own - own.shift(h)).to_numpy()[:, None]
+                    peers = _asof(R, df.index, strict).to_numpy()
+                    raw[f"rank{h}"] = np.where(np.isfinite(mine[:, 0]),
+                                               (peers < mine).sum(axis=1) / np.isfinite(peers).sum(axis=1).clip(1), np.nan)
         out[t] = raw[features]
     return out
 
@@ -242,6 +371,8 @@ def build_m4_features(prices, tickers, features, factor_tickers, vix=None, param
     for t, raw in m4_raw_frames(prices, tickers, features, factor_tickers, vix, p).items():
         z = rolling_z(raw, p["z_window"], p["z_min_periods"])
         z = z.clip(-p["clip"], p["clip"])
+        for f in (f for f in BOUNDED_FEATURES if f in z):
+            z[f] = 2.0 * raw[f] - 1.0
         if "resid_avail" in features:
             # the residual GROUP is available only when both members are and the ticker
             # has warmup_bars of history; until then both stay 0 and the flag is 0
@@ -254,6 +385,12 @@ def build_m4_features(prices, tickers, features, factor_tickers, vix=None, param
             ok = z[list(VIX_FEATURES)].notna().all(axis=1)
             z.loc[~ok, list(VIX_FEATURES)] = np.nan
             z["vix_avail"] = ok.astype(float)
+        for flag, group in (("sig_avail", TREND_FEATURES), ("ctx_avail", CTX_FEATURES)):
+            if flag in features:                              # the group counts only when complete and warm
+                cols = [f for f in group if f in features]
+                ok = z[cols].notna().all(axis=1) & (np.arange(len(z)) >= int(p["warmup_bars"]))
+                z.loc[~ok, cols] = np.nan
+                z[flag] = ok.astype(float)
         x = z[list(features)].to_numpy(dtype=float)               # column order = config order
         out[t] = np.nan_to_num(x, nan=0.0).astype(np.float32)
     return out

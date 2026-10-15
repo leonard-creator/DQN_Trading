@@ -73,6 +73,33 @@ def vol_target(close, span=60, min_history=252, levels=4):
     return e
 
 
+def mean_reversion(close, decisions, cost, horizons=(2, 5, 10, 20, 60), min_history=504):
+    """Estimated W-revert oracle (descriptive baseline, PROTOCOL Part II §V12.1 item 25, realism check).
+
+    Fits the temporary-component model of harness/synthetic.py (random walk + transitory AR(1) part) to the
+    ticker's OWN daily log returns before the block (least squares on the variance ratios at `horizons`),
+    then runs the causal Kalman contrarian rule synthetic.kalman_revert with those parameters and the
+    evaluation cost: long unless the filtered transitory deviation predicts a loss beyond the cost band.
+    No reversion in the past data (fitted share ~ 0) means holding. Exposure 0 or 1; flat before
+    `min_history` bars.
+    """
+    from scipy.optimize import minimize
+    from harness.synthetic import kalman_revert
+    r = np.diff(np.log(np.asarray(close, dtype=np.float64)), prepend=np.nan)
+    past = r[1:int(decisions[0]) + 1]                         # returns known at the first decision of the block
+    past = past[np.isfinite(past)] - np.nanmean(past)
+    q = np.asarray(horizons)
+    vr = np.array([np.convolve(past, np.ones(h), "valid").var() / (h * past.var()) for h in q])
+    fit = minimize(lambda x: np.sum((1 - x[0] + x[0] * (1 - x[1] ** q) / (q * (1 - x[1])) - vr) ** 2), [0.2, 0.9],
+                   bounds=[(0.0, 0.9), (0.0, 0.99)])
+    share, phi = fit.x
+    v, mu = np.nanstd(r[1:int(decisions[0]) + 1]), np.nanmean(r[1:int(decisions[0]) + 1])
+    e = kalman_revert(np.nan_to_num(r, nan=mu), mu, phi, np.sqrt(1 - share) * v,
+                      np.sqrt(share * (1 + phi) / 2) * v, cost * (1 - phi))[:, 0]
+    e[:min_history] = 0.0
+    return e
+
+
 def stable_seed(*parts):
     """Deterministic integer seed from strings/ints.
 
@@ -141,14 +168,20 @@ def _vt(close, dec, seed, ticker, fold, cfg, p):
     return vol_target(close, levels=cfg["evaluation"]["position_levels"], **p)
 
 
+def _mr(close, dec, seed, ticker, fold, cfg, p):
+    c = cfg["evaluation"]["costs"]
+    return mean_reversion(close, dec, (c["primary_bps"] + c["half_spread_bps"]) / 1e4, **p)
+
+
 BASELINES = {
     "buy_and_hold": _bh,
     "momentum": _mom,
     "macd": _macd,
     "random": _rand,
     "vol_target": _vt,          # descriptive only (v2 step 0a); not one of the four H1 baselines
+    "mean_reversion": _mr,      # descriptive only (v2 realism check, §V12.1 item 25); not an H1 baseline
 }
 
 # Deterministic baselines give identical results for every seed, so the
 # harness computes them once and reuses them across seeds.
-DETERMINISTIC = {"buy_and_hold", "momentum", "macd", "vol_target"}
+DETERMINISTIC = {"buy_and_hold", "momentum", "macd", "vol_target", "mean_reversion"}

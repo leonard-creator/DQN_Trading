@@ -53,6 +53,18 @@ Learner options for the hyperparameter search (PROTOCOL Part II §V12.1 item 23)
                          say nothing (randomized prior functions, Osband et al. 2018). The prior is
                          part of the saved weights.
   algo.weight_decay      AdamW instead of Adam (decoupled weight decay, as in BBF).
+  algo.loss: ahl_gauss   HL-Gauss with an adaptive support (AHL-Gaussian, Chen et al., ICLR 2025 submission;
+                         §V12.1 item 24): bins on [c - xi, c + xi], c = the data midpoint of the hold values,
+                         xi starts confined (algo.ahl_xi0 = 3) and takes one plain gradient-descent step
+                         (algo.ahl_lr = 1e-3) per update on the projection error E[(sum p_i z_i - y)^2] of the
+                         batch's targets, so it widens until no target is cut off and then stops. The paper's
+                         1e-3 assumes 0.5-2.5M updates; with our ~25k updates 5e-2 gives its curve shape (the
+                         screen hpo.SCREENS['support'] tests both). xi is a weight of the online network,
+                         saved and restored with it.
+  algo.aux_heads: 3      V3 auxiliary heads (§V6.3 D3): a linear head on the encoder output predicts the next
+                         5- and 20-bar vol-scaled return and the next 20-bar log realised vol (relative to sigma_t);
+                         MSE x algo.aux_weight (0.1) is added to the value loss. Samples then need t + 20 <= hi
+                         (inside the purge P = 40). The head is not part of the saved decision network.
 """
 
 import json
@@ -71,7 +83,23 @@ from rl.agent import make_schedule
 from rl.networks import build_q_network
 from rl.trainer import score_ranges
 
-LOSSES = ("huber", "mse", "hl_gauss")
+LOSSES = ("huber", "mse", "hl_gauss", "ahl_gauss")
+
+
+class SupportWidth(layers.Layer):
+    """Identity layer that holds the AHL-Gaussian half-width xi, so xi is saved and restored with the weights
+    (checkpoint selection, last weights, diagnostics). Not trainable by the network's optimiser."""
+
+    def __init__(self, xi0=1.0, **kwargs):
+        super().__init__(**kwargs)
+        self.xi0 = float(xi0)
+
+    def build(self, input_shape):
+        self.xi = self.add_weight(name="xi", shape=(), initializer=keras.initializers.Constant(self.xi0),
+                                  trainable=False)
+
+    def call(self, x):
+        return x
 
 
 def hl_probs(y, edges, sigma):
@@ -114,20 +142,36 @@ class UAgent:
         loss = algo.get("loss", "huber")
         if loss not in LOSSES:
             raise ValueError(f"algo.loss must be one of {LOSSES}, not '{loss}'")
-        self.bins = int(algo.get("bins", 51)) if loss == "hl_gauss" else 1
+        self.bins = int(algo.get("bins", 51)) if loss in ("hl_gauss", "ahl_gauss") else 1
+        self.adaptive = loss == "ahl_gauss"
         if self.bins > 1:
             if support is None:
-                raise ValueError("hl_gauss needs the value support (computed by train_exogenous)")
+                raise ValueError(f"{loss} needs the value support (computed by train_exogenous)")
             self.edges = tf.constant(np.linspace(support[0], support[1], self.bins + 1), tf.float32)
             self.centres = (self.edges[1:] + self.edges[:-1]) / 2.0
             self.sigma = 0.75 * (support[1] - support[0]) / self.bins          # Farebrother et al.: 0.75 bin
+            self.mid, self.unit = (support[0] + support[1]) / 2.0, tf.constant(np.linspace(-1, 1, self.bins + 1),
+                                                                                tf.float32)
+            self.xi_lr = float(algo.get("ahl_lr", 1e-3))
+        xi0 = (support[1] - support[0]) / 2.0 if self.adaptive else None
         beta = float(algo.get("prior_scale", 0.0))
-        self.online, base = self._network(window, n_feat, self.heads * E * self.bins, net_cfg, beta)
-        self.target, _ = self._network(window, n_feat, self.heads * E * self.bins, net_cfg, beta)
+        self.online, base = self._network(window, n_feat, self.heads * E * self.bins, net_cfg, beta, xi0)
+        self.target, _ = self._network(window, n_feat, self.heads * E * self.bins, net_cfg, beta, xi0)
+        if self.adaptive:                        # the online network's xi defines the bins of both networks
+            self.xi = next(lay for lay in self.online.layers if isinstance(lay, SupportWidth)).xi
+        self.n_aux, self.aux_weight = int(algo.get("aux_heads", 0)), float(algo.get("aux_weight", 0.1))
+        self.train_vars = self.online.trainable_variables
+        if self.n_aux:                           # V3 (D3): a linear auxiliary head on the encoder output
+            if beta or self.adaptive:
+                raise NotImplementedError("auxiliary heads with random priors or AHL-Gaussian")
+            enc = [lay for lay in base.layers if isinstance(lay, layers.Flatten)][-1].output
+            self.aux = keras.Model(base.inputs, layers.Dense(self.n_aux, name="aux")(enc))
+            self.train_vars = self.online.trainable_variables + self.aux.layers[-1].trainable_variables
         if bias is not None:                     # buy-and-hold prior on the trainable output layer
             out = np.asarray(bias, np.float32)
             if self.bins > 1:                    # logits whose expectation is the prior value
-                out = np.log(hl_probs(tf.constant(out), self.edges, self.sigma).numpy() + 1e-6).ravel()
+                edges, _, sigma = self._grid()
+                out = np.log(hl_probs(tf.constant(out), edges, sigma).numpy() + 1e-6).ravel()
             kernel = base.layers[-1].get_weights()[0]
             base.layers[-1].set_weights([kernel, np.tile(out, self.heads)])
         self.target.set_weights(self.online.get_weights())                  # incl. the frozen prior
@@ -147,16 +191,27 @@ class UAgent:
         self._u = tf.function(lambda m: self._values(self.online(m, training=False)), reduce_retracing=True)
 
     @staticmethod
-    def _network(window, n_feat, n_out, net, beta):
+    def _network(window, n_feat, n_out, net, beta, xi0=None):
         """(model, its trainable part). beta > 0: model(m) = base(m) + beta prior(m) with a frozen,
-        randomly initialised prior network of the same shape (Osband et al. 2018)."""
-        base = build_q_network(window, n_feat, 0, n_out, net)
-        if not beta:
-            return base, base
-        prior = build_q_network(window, n_feat, 0, n_out, net)
-        prior.trainable = False
-        m = keras.Input(shape=(window, n_feat))
-        return keras.Model(m, layers.Add()([base(m), layers.Rescaling(beta)(prior(m))])), base
+        randomly initialised prior network of the same shape (Osband et al. 2018). xi0: AHL-Gaussian's
+        half-width xi as an extra (identity) layer, so it is part of the weights."""
+        base = model = build_q_network(window, n_feat, 0, n_out, net)
+        if beta:
+            prior = build_q_network(window, n_feat, 0, n_out, net)
+            prior.trainable = False
+            m = keras.Input(shape=(window, n_feat))
+            model = keras.Model(m, layers.Add()([base(m), layers.Rescaling(beta)(prior(m))]))
+        if xi0 is not None:
+            m = keras.Input(shape=(window, n_feat))
+            model = keras.Model(m, SupportWidth(xi0)(model(m)))
+        return model, base
+
+    def _grid(self):
+        """(edges, centres, sigma) of the value bins: fixed, or with AHL-Gaussian from the current xi."""
+        if not self.adaptive:
+            return self.edges, self.centres, self.sigma
+        edges = self.mid + self.xi * self.unit
+        return edges, (edges[1:] + edges[:-1]) / 2.0, 0.75 * 2.0 * self.xi / self.bins
 
     def _logits(self, out):
         return tf.reshape(out, (-1, self.heads, len(self.grid), self.bins))  # (B, heads, E, bins)
@@ -165,7 +220,7 @@ class UAgent:
         """U (B, heads, E) from the network output; with HL-Gauss the expectation over the bins."""
         if self.bins == 1:
             return tf.reshape(out, (-1, self.heads, len(self.grid)))
-        return tf.reduce_sum(tf.nn.softmax(self._logits(out)) * self.centres, axis=-1)
+        return tf.reduce_sum(tf.nn.softmax(self._logits(out)) * self._grid()[1], axis=-1)
 
     def u_values(self, market):
         """(B, E) for one head, (B, heads, E) for several."""
@@ -186,15 +241,15 @@ class UAgent:
         nxt = tf.gather(u_tg, best, batch_dims=2) - tf.gather(cost, best, batch_dims=3)
         return rew[:, None, :] + self.discount * nxt
 
-    def _train_step(self, m, rew, m2, kappa2, phi2, mask):
+    def _train_step(self, m, rew, m2, kappa2, phi2, mask, aux_y):
         y = tf.stop_gradient(self.targets(rew, m2, kappa2, phi2))
         with tf.GradientTape() as tape:
             out = self.online(m, training=True)
             u = self._values(out)
             td = y - u                                                # all heads and exposures at once
             if self.bins > 1:                                         # HL-Gauss: cross-entropy per value
-                err = -tf.reduce_sum(hl_probs(y, self.edges, self.sigma) * tf.nn.log_softmax(self._logits(out)),
-                                     axis=-1)
+                edges, _, sigma = self._grid()
+                err = -tf.reduce_sum(hl_probs(y, edges, sigma) * tf.nn.log_softmax(self._logits(out)), axis=-1)
             elif self.delta is None:
                 err = tf.square(td)
             else:
@@ -203,17 +258,27 @@ class UAgent:
                 err = 0.5 * q ** 2 + self.delta * (a - q)
             w = mask[:, :, None]                                      # bootstrap mask (B, heads)
             loss = tf.reduce_sum(w * err) / tf.maximum(1.0, tf.reduce_sum(w) * len(self.grid))
-        grads = tape.gradient(loss, self.online.trainable_variables)
-        self.opt.apply_gradients(zip(grads, self.online.trainable_variables))
+            if self.n_aux:                                            # V3 auxiliary heads, weight 0.1
+                loss = loss + self.aux_weight * tf.reduce_mean(tf.square(self.aux(m, training=True) - aux_y))
+        grads = tape.gradient(loss, self.train_vars)
+        self.opt.apply_gradients(zip(grads, self.train_vars))
         # soft target update of the learnt weights; a frozen prior stays bit-identical in both networks
         for t_var, o_var in zip(self.target.trainable_weights, self.online.trainable_weights):
             t_var.assign(self.tau * o_var + (1.0 - self.tau) * t_var)
+        if self.adaptive:                         # AHL-Gaussian: one gradient-descent step on xi (Algorithm 1)
+            with tf.GradientTape() as tape:
+                tape.watch(self.xi)
+                edges, centres, sigma = self._grid()
+                proj = tf.reduce_sum(hl_probs(y, edges, sigma) * centres, axis=-1)   # projected target mean
+                perr = tf.reduce_mean(tf.square(proj - y))                         # projection error
+            self.xi.assign(tf.maximum(self.xi - self.xi_lr * tape.gradient(perr, self.xi), 1e-3))
         return td, loss, tf.reduce_mean(u)
 
-    def learn(self, m, rew, m2, kappa2, phi2, mask=None):
+    def learn(self, m, rew, m2, kappa2, phi2, mask=None, aux=None):
         f = lambda x: tf.convert_to_tensor(x, tf.float32)            # noqa: E731
         mask = np.ones((len(m), self.heads)) if mask is None else mask
-        td, loss, mean_u = self._step(f(m), f(rew), f(m2), f(kappa2), f(phi2), f(mask))
+        aux = np.zeros((len(m), max(1, self.n_aux))) if aux is None else aux
+        td, loss, mean_u = self._step(f(m), f(rew), f(m2), f(kappa2), f(phi2), f(mask), f(aux))
         self.updates += 1
         return td.numpy(), float(loss), float(mean_u)
 
@@ -243,11 +308,12 @@ def train_exogenous(cfg, data, train_ranges, select_ranges, seed, costs, logger=
     levels = a["env"].get("levels", cfg["evaluation"]["position_levels"])
     total, batch = int(int(tr["transitions"]) * float(tr["update_ratio"])), int(algo["batch_size"])
     gamma, eta, clip = float(algo["gamma"]), float(a.get("anchor_eta", 0.0)), a["env"].get("reward_clip")
-    n = int(algo.get("n_step", 1))
+    n, n_aux = int(algo.get("n_step", 1)), int(algo.get("aux_heads", 0))
     grid = np.arange(levels + 1) / levels
     rate, fee, hold = cost_arrays(data, costs)
-    # samples t with t + n inside the ticker's range; z = vol-scaled net return of each bar
-    G = np.concatenate([data.offsets[i] + np.arange(lo, hi - n + 1) for i, (lo, hi) in enumerate(train_ranges)])
+    # samples t with t + n (with auxiliary heads: t + 20) inside the ticker's range; z = vol-scaled net return
+    h = max(n, 20) if n_aux else n
+    G = np.concatenate([data.offsets[i] + np.arange(lo, hi - h + 1) for i, (lo, hi) in enumerate(train_ranges)])
     z = lambda g: np.clip((data.close[g + 1] / data.close[g] - 1.0 - hold[g]) / data.sigma[g],  # noqa: E731
                           -(clip or np.inf), clip or np.inf)
     zsum = sum(gamma ** k * z(G + k) for k in range(n))               # discounted n-bar sums per sample
@@ -257,6 +323,12 @@ def train_exogenous(cfg, data, train_ranges, select_ranges, seed, costs, logger=
     if a["env"].get("reward") == "mean_variance":
         lam = a["env"].get("mv_lambda", 0.5)
         lam = max(float(z(G).mean()), 1e-3) / float((z(G) ** 2).mean()) if lam == "auto" else float(lam)
+
+    aux_y = None
+    if n_aux:      # V3 (D3) targets: next 5- and 20-bar vol-scaled return, next 20-bar log realised vol / sigma_t
+        raw = np.stack([data.close[G + k + 1] / data.close[G + k] - 1.0 for k in range(20)], axis=1)
+        aux_y = np.stack([sum(z(G + k) for k in range(5)) / np.sqrt(5), sum(z(G + k) for k in range(20)) / np.sqrt(20),
+                          np.log(raw.std(axis=1) / data.sigma[G] + 1e-6)], axis=1)[:, :n_aux].astype(np.float32)
 
     def immediate(idx):                                               # (B, E) training reward of each e'
         return (grid[None, :] * zsum[idx][:, None] - 0.5 * lam * grid[None, :] ** 2 * z2sum[idx][:, None]
@@ -270,7 +342,7 @@ def train_exogenous(cfg, data, train_ranges, select_ranges, seed, costs, logger=
     pre = a.get("pretrain")
     weights = os.path.join(repo_path(pre["dir"]), "agent", f"PRE_s{seed}", "best.weights.h5") if pre else None
     support = None
-    if algo.get("loss") == "hl_gauss":
+    if algo.get("loss") in ("hl_gauss", "ahl_gauss"):
         if pre:                                   # the value bins must be the pretrained network's
             with open(os.path.join(os.path.dirname(weights), "info.json")) as fh:
                 support = json.load(fh)["hl_support"]
@@ -278,6 +350,9 @@ def train_exogenous(cfg, data, train_ranges, select_ranges, seed, costs, logger=
             imm = immediate(np.arange(len(G)))
             v, sd = imm.mean(axis=0) / (1.0 - gamma ** n), imm.std(axis=0).max()
             support = [float(v.min() - 6 * sd), float(v.max() + 6 * sd)]
+            if algo["loss"] == "ahl_gauss":       # same centre, confined start: half-width ahl_xi0 (learnt)
+                mid, xi0 = (v.min() + v.max()) / 2.0, float(algo.get("ahl_xi0", 3.0))
+                support = [float(mid - xi0), float(mid + xi0)]
     agent = UAgent(data.window, data.n_feat, levels, a["network"], algo, total,
                    None if pre or prior == "none" else bias, discount=gamma ** n, support=support)
     if pre:                                       # one long-history checkpoint per seed serves all folds
@@ -296,7 +371,8 @@ def train_exogenous(cfg, data, train_ranges, select_ranges, seed, costs, logger=
                "lr": agent.current_lr(), "reward_scale": 1.0,
                **{k: float(np.mean(v)) if v else np.nan for k, v in zip(("loss", "mean_q", "abs_td"), stats)},
                "inner_sharpe": m["sharpe"], "inner_cagr": m["cagr"], "inner_turnover": m["turnover"],
-               "inner_exposure": m["exposure"], "elapsed_s": time.time() - t0, "tag": tag}
+               "inner_exposure": m["exposure"], "elapsed_s": time.time() - t0, "tag": tag,
+               "xi": float(agent.xi.numpy()) if agent.adaptive else np.nan}
         for v in stats:
             v.clear()
         curve.append(row)
@@ -313,7 +389,7 @@ def train_exogenous(cfg, data, train_ranges, select_ranges, seed, costs, logger=
         g2 = G[idx] + n                                               # same ticker: t + n <= hi
         td, loss, mu = agent.learn(data.windows(G[idx]), immediate(idx), data.windows(g2),
                                    rate[g2] / data.sigma[g2], fee[g2] / data.sigma[g2],
-                                   None if masks is None else masks[idx])
+                                   None if masks is None else masks[idx], None if aux_y is None else aux_y[idx])
         for v, x in zip(stats, (loss, mu, float(np.mean(np.abs(td))))):
             v.append(x)
         if agent.updates % eval_every == 0:
@@ -321,9 +397,10 @@ def train_exogenous(cfg, data, train_ranges, select_ranges, seed, costs, logger=
     evaluate("last")
     last_weights = agent.online.get_weights()
     if tr.get("select", "best_inner_val") == "best_inner_val" and best["weights"] is not None:
-        agent.online.set_weights(best["weights"])
+        agent.online.set_weights(best["weights"])                   # with AHL-Gaussian also its xi
     info = {"best_update": best["update"], "best_inner_sharpe": float(best["sharpe"]),
             "last_inner_sharpe": float(curve[-1]["inner_sharpe"]), "updates": agent.updates,
             "transitions": total * batch, "seconds": time.time() - t0, "select": tr.get("select", "best_inner_val"),
-            "samples": int(len(G)), "mv_lambda": lam, "pretrained": weights, "hl_support": support}
+            "samples": int(len(G)), "mv_lambda": lam, "pretrained": weights, "hl_support": support,
+            "ahl_xi": [float(agent.xi.numpy()), curve[-1]["xi"]] if agent.adaptive else None}
     return agent, info, pd.DataFrame(curve), last_weights

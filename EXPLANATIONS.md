@@ -174,3 +174,28 @@ Our diagnosis, small value gaps hidden in noisy targets, is a known problem in d
   - Every 20-day target looks 20 days into the future. To make sure no training example ever peeks across the boundary into the validation period, we leave a gap of 40 trading days between training and validation data: the 20-day observation window plus the 20-day look-ahead.
   - 40-day targets would need a 60-day gap. That is a protocol change, because all v2 runs must use the same gap to stay comparable.
   - So 40-day targets and bigger networks are tested on the synthetic worlds first (no gap problem there, no trials). The gap is changed for real data only if they clearly help.
+
+---
+
+## 5. Glossary: the terms of the winning setting (search of 2026-10-08)
+
+The winner of the hyperparameter search, **c00**, in one line: *HL-Gauss loss, 5-day targets, γ = 0.99, the 4× wider network, 10 advisor heads with a strict gate (z = 1), learning rate 1e-4, no random prior, no weight decay, no buy-and-hold head start.* The terms in that line:
+
+| Term | In plain words | Example / our values |
+|---|---|---|
+| **Value (U)** | The agent's estimate of how good it is to hold a given exposure (0, 25, 50, 75 or 100 %) from today on, in volatility units. It trades only if the better value beats the trading cost (the no-trade band). | U(100 %) = 3.8 means: holding fully invested is expected to earn about 3.8 "standard days" of return, discounted. |
+| **HL-Gauss loss** (histogram loss) | The network does not output one number per value but a **histogram** over 51 value bins, and the value is the histogram's average. It learns by matching each noisy training target smeared out as a small bell curve over the bins (a classification problem instead of a regression). | Robust to noise like Huber, but keeps the correct average like MSE. Every leader of the search uses it. |
+| **Value range (support)** | The interval the 51 bins cover. Ours is fixed per run from the training data: the hold values ± 6 standard deviations of the daily-return noise. Too narrow cuts off targets; too wide makes the bins coarse. | About −14 … +18 for c00 (median over its 30 final runs). |
+| **AHL-Gaussian** | A 2025 proposal (Chen et al.): the value range is **learnt**. It starts narrow and widens only as far as the targets require, then stops. Being tested in the follow-up screen (2026-10-08). | Starts at ±3 around the middle; in a short check it grew to about ±7 within 5,000 updates. |
+| **n-step targets ("5-day targets")** | Each training example says: "hold this exposure for n days, collect those n days of returns, then continue from the best decision". Longer n passes slow news (e.g. a bear market) back faster but blurs short swings. | n = 5 wins for 1–4-week timing; 40 days never helped. |
+| **Discount γ** | How much the agent cares about the future: a gain t days ahead counts γᵗ. | γ = 0.99: a gain 70 days ahead still counts half. |
+| **Network ×4** | The same network shape (a small convolution-transformer that reads the last 20 days of features), but 4× wider: 32 instead of 8 channels, hidden layers 256-128 instead of 64-32. | More capacity finds more timing, but also more noise; it needs the slow learning rate and the gate. |
+| **Advisor heads (bootstrapped heads)** | 10 output heads on one shared network, each trained on its own random half of the data, like 10 advisors with slightly different experience. | They agree on real patterns and disagree on noise. |
+| **Gate z** | The agent trades only if the advisors' average gain beats the cost by more than z times their disagreement. | z = 1: one "standard disagreement" of safety margin. z = 0 would follow the average alone. |
+| **Learning rate** | The step size of each training update. | 1e-4 (slow) keeps the agent from chasing noise; 3e-4 made 81 % of the settings trade noise. |
+| **Weight decay** | Gently shrinks unused network weights each step (a brake for large networks). | No measurable effect here. |
+| **Random prior (β)** | A frozen random network added to each advisor so that the advisors keep disagreeing where the data says nothing (Osband et al. 2018). | β = 3 hurt here: the advisors' random opinions led to trades. |
+| **No buy-and-hold head start** | The agent starts without a built-in preference for being invested (no anchor penalty, no initial values favouring 100 %), so stepping aside is not discouraged. | The owner's objective of 2026-10-07. |
+| **Oracle share** | The agent's gain over buy-and-hold divided by the gain of the oracle, which knows the true process. | 77 % in W-swing: the agent earns +0.23 Sharpe of the oracle's +0.30. |
+| **Noise trading** | Trading in a world where timing cannot help (W-null), which only costs fees. The search pushes any setting that loses more than 0.05 Sharpe there to the bottom. | c25 traded 13 times a year in W-null and was disqualified. |
+| **W-swing** | The synthetic test world for 1–4-week timing: each ticker's expected return drifts up or down, and half of every drift fades within 10 trading days. | The oracle trades 17 times a year and gains +0.32 Sharpe over buy-and-hold at 5 bp. |

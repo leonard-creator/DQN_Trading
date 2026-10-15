@@ -1,0 +1,13 @@
+# DESCRIPTIVE baseline (PROTOCOL Part II §V12.1 item 25, realism check): the estimated W-revert oracle.
+# Per ticker and fold, the temporary-component model (random walk + transitory AR(1) part) is fitted to the
+# ticker's own returns before the block (variance ratios at 2-60 days); a causal Kalman contrarian rule then
+# decides long or flat with the 11 bp cost band (harness/baselines.mean_reversion).
+# Not one of the four H1 baselines and never selectable for M5; logged as a baseline row, not a trial.
+name: baseline_mean_reversion
+kind: baseline
+policy: mean_reversion
+policy_params: {}
+eval_sets: [train, leave_out, single, deploy2]
+extra_ticker_sets:
+  deploy2: [SPY, EFA]
+cost_scenarios: [neo_broker]

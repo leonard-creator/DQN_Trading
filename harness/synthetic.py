@@ -24,6 +24,10 @@ usual one-bar lag.
               swings. Oracle: a Kalman filter per ticker on its own returns -> long or
               flat once the predicted return leaves a cost band (oracle exposure differs
               per ticker).
+    W-revert  (§V12.1 item 25, realism check) mean reversion as measured in the real ETFs:
+              each price = random walk + a transitory AR(1) component (half-life 6.8 days,
+              41 % of the daily variance). Oracle: a Kalman filter on the transitory part,
+              contrarian (flat after rallies that are expected to revert).
 
 Run k (k = 0..4) trains agent seed k on path 1000+k (504 warm-up + 4,090 bars;
 checkpoints on its last 252 bars, purged) and is scored on the independent 20-year
@@ -56,7 +60,12 @@ REGIME = {"mu": (0.15, -0.20), "sigma": (0.14, 0.25), "stay": (0.998, 0.99)}  # 
 # only): the smallest drift_sd of {1.0, 1.25, 1.5, 1.75, 2.0}e-3 with a median oracle gain >= 0.15 at 5 bp and
 # a turnover of 12-50/yr. Results +0.04 (5.6/yr), +0.14 (12.4/yr), +0.32 (17.0/yr) -> 1.5e-3, frozen.
 SWING = {"half_life": 10, "drift_sd": 1.5e-3, "cost": 5e-4}
-ALL_WORLDS = WORLDS + ("W-swing",)
+# W-revert (§V12.1 item 25, realism check): a temporary price component (Poterba & Summers 1988) fitted to the
+# median per-ticker variance-ratio curve of the 26 training ETFs outside the 2008-09 and 2020 H1 crises
+# (development data; VR at 2/5/10/20/60 days 0.97/0.93/0.85/0.79/0.66): share of the daily return variance
+# that is transitory, and its AR(1) persistence (half-life 6.8 days); cost = 5 bp, the oracle's band.
+REVERT = {"share": 0.407, "phi": 0.904, "cost": 5e-4}
+ALL_WORLDS = WORLDS + ("W-swing", "W-revert")
 TICKERS = [f"S{i:02d}" for i in range(N_TICKERS)]
 SCALES = np.exp(np.random.default_rng(0).uniform(np.log(0.5), np.log(2.0), N_TICKERS))
 CSV = repo_path("experiments", "synthetic.csv")
@@ -126,6 +135,30 @@ def kalman_target(y, mu, phi, sd, noise, band):
     return e
 
 
+def kalman_revert(y, mu, phi, se, seta, band):
+    """Contrarian exposure from returns y (n,) or (n x N), causal: the W-revert oracle and, with estimated
+    parameters, the real-data baseline `mean_reversion` (harness/baselines.py).
+
+    y_t = mu + e_t + u_t - u_t-1: a random walk with drift mu and noise e (SD se) plus a transitory AR(1)
+    component u (persistence phi, innovation SD seta). A Kalman filter on the state (u_t, u_t-1) predicts the
+    next return mu + (phi - 1) u_t|t: long once it is above +band, flat once it is below -band, else unchanged.
+    """
+    y = np.asarray(y, dtype=float).reshape(len(y), -1)
+    F, H, Qm = np.array([[phi, 0.0], [1.0, 0.0]]), np.array([1.0, -1.0]), np.diag([seta ** 2, 0.0])
+    v0 = seta ** 2 / (1 - phi ** 2)
+    x, P = np.zeros((y.shape[1], 2)), v0 * np.array([[1.0, phi], [phi, 1.0]])   # stationary start
+    e, prev = np.empty(y.shape), np.ones(y.shape[1])
+    for t in range(len(y)):
+        x, P = x @ F.T, F @ P @ F.T + Qm                                    # predict the state at t
+        K = P @ H / (H @ P @ H + se ** 2)
+        x = x + np.outer(np.nan_to_num(y[t] - mu - x @ H), K)               # update with y_t (missing: none)
+        P = P - np.outer(K, H @ P)
+        pred = mu + (phi - 1) * x[:, 0]                                     # E[y_t+1 | y_<=t]
+        prev = np.where(pred > band, 1.0, np.where(pred < -band, 0.0, prev))
+        e[t] = prev
+    return e
+
+
 def simulate(world, n, seed):
     """One path: returns (n x 26), VIX proxy (n,), oracle exposure decided at each bar (n x 26)."""
     if world not in ALL_WORLDS:
@@ -149,6 +182,16 @@ def simulate(world, n, seed):
             x[t] = phi * x[t - 1] + shock[t]
         sig = ahead = np.full(n, GARCH["vol"])                              # constant vol: VIX is noise
         mu = (mean + x) * SCALES                                            # B&H Sharpe 0.6 per ticker
+    elif world == "W-revert":
+        sh, phi, v = REVERT["share"], REVERT["phi"], GARCH["vol"]
+        mean, seta = SHARPE / np.sqrt(252) * v, np.sqrt(sh * (1 + phi) / 2) * v   # Var(daily change of u) = sh v^2
+        shock = seta * (np.sqrt(RHO) * _shocks(rng, n)[:, None] + np.sqrt(1 - RHO) * _shocks(rng, (n, N_TICKERS)))
+        tr = np.empty((n, N_TICKERS))
+        tr[0] = shock[0] / np.sqrt(1 - phi ** 2)                           # stationary start
+        for t in range(1, n):
+            tr[t] = phi * tr[t - 1] + shock[t]
+        sig = ahead = np.full(n, np.sqrt(1 - sh) * v)                       # permanent part; VIX is noise
+        mu = (mean + np.diff(tr, axis=0, prepend=tr[:1])) * SCALES         # drift + change of the transitory part
     else:
         sig, ahead = garch_forecast(z, **GARCH)
         v = GARCH["vol"]
@@ -162,6 +205,8 @@ def simulate(world, n, seed):
     elif world == "W-swing":                                               # band in each ticker's scaled units
         oracle = kalman_target(r / SCALES, mean, phi, SWING["drift_sd"], GARCH["vol"],
                                SWING["cost"] * (1 - phi) / SCALES)
+    elif world == "W-revert":                                              # band in each ticker's scaled units
+        oracle = kalman_revert(r / SCALES, mean, phi, np.sqrt(1 - sh) * v, seta, REVERT["cost"] * (1 - phi) / SCALES)
     else:
         x = (r / SCALES).mean(axis=1)                                      # observable factor proxy
         oracle = hamilton_target(x, mu_d, sd_d * np.sqrt(RHO + (1 - RHO) / N_TICKERS), REGIME["stay"])

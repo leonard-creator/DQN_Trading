@@ -219,3 +219,71 @@ def test_vix_avail_masks_the_vix_group_where_vix_did_not_exist():
     flag, lvl = f[:, feats.index("vix_avail")], f[:, feats.index("vix_lag1")]
     assert np.all(flag[:301] == 0.0) and np.all(lvl[:301] == 0.0)  # lag 1: bar 300 still sees no VIX
     assert flag[-1] == 1.0 and np.any(lvl[350:] != 0.0)
+
+
+def context_world(n=520, seed=3):
+    """The five context tickers, two other training tickers and a leave-out ticker 'IEF' (not a factor)."""
+    rng = np.random.default_rng(seed)
+    dates = pd.bdate_range("2012-01-02", periods=n)
+    market = 0.01 * rng.standard_normal(n)
+    prices = {}
+    for i, t in enumerate(["TLT", "TIP", "LQD", "SPY", "EFA", "A1", "A2", "IEF"]):
+        close = 100 * np.exp(np.cumsum((0.3 + 0.1 * i) * market + 0.005 * rng.standard_normal(n)))
+        prices[t] = pd.DataFrame({"Open": close, "High": close * 1.005, "Low": close * 0.995, "Close": close,
+                                  "Volume": 1000.0}, index=pd.Index(dates, name="Date"))
+    return prices
+
+
+V3 = ["tsr21", "tsr252", "macd8", "cp21_recent", "cp126_age", "sig_avail", "bond_mom21", "eq_mom63", "credit20",
+      "term60", "breadth", "dispersion", "corr60", "rank63", "rank252", "ctx_avail"]
+V3_CTX = [f for f in V3 if f not in ("tsr21", "tsr252", "macd8", "cp21_recent", "cp126_age", "sig_avail")]
+
+
+def test_v3_context_has_no_lookahead_and_never_uses_leave_out_tickers():
+    """D1 (PROTOCOL Part II §V6.3): causal, and the leave-out ticker never enters an aggregate."""
+    prices = context_world()
+    factors = [t for t in prices if t != "IEF"]
+    base = build_m4_features(prices, list(prices), V3, factors, None, SMALL)
+    t, rng = 400, np.random.default_rng(1)
+    pert = {k: d.copy() for k, d in prices.items()}
+    for d in pert.values():
+        d.iloc[t + 1:, :4] *= np.exp(0.3 * rng.standard_normal((len(d) - t - 1, 1)))
+    new = build_m4_features(pert, list(prices), V3, factors, None, SMALL)
+    for k in prices:
+        np.testing.assert_array_equal(base[k][: t + 1], new[k][: t + 1], err_msg=k)
+    other = {k: d.copy() for k, d in prices.items()}
+    other["IEF"].iloc[:, :4] *= np.exp(np.cumsum(0.02 * rng.standard_normal((len(other["IEF"]), 1)), axis=0))
+    again = build_m4_features(other, list(prices), V3, factors, None, SMALL)
+    cols = [V3.index(f) for f in V3_CTX if not f.startswith("rank")]
+    for k in factors:
+        np.testing.assert_array_equal(base[k][:, cols], again[k][:, cols], err_msg=k)
+    assert base["SPY"][-100:, V3.index("ctx_avail")].min() == 1.0
+
+
+def test_v3_context_is_masked_without_context_tickers():
+    """The long history has no ETFs: the whole D1 group is 0 and ctx_avail is 0; D2 is still available."""
+    prices, vix, _ = factor_world()
+    out = build_m4_features(prices, list(prices), V3, list(prices)[:6], None, SMALL)
+    x = out["T0"]
+    assert (x[:, [V3.index(f) for f in V3_CTX]] == 0).all() and x[-100:, V3.index("sig_avail")].min() == 1.0
+
+
+def test_v3_context_of_an_early_close_ticker_is_the_previous_us_bar():
+    """Q1 for D1: ^GDAXI-type tickers see the context of the previous US bar, US tickers the same day's."""
+    prices = context_world()
+    prices["DAX"] = prices.pop("A2")
+    factors = [t for t in prices if t != "IEF"]
+    params = {**SMALL, "early_close_tickers": ["DAX"]}
+    raw = m4_raw_frames(prices, ["SPY", "DAX"], ["bond_mom21", "breadth"], factors, None, params)
+    np.testing.assert_array_equal(raw["DAX"]["bond_mom21"].to_numpy()[1:], raw["SPY"]["bond_mom21"].to_numpy()[:-1])
+
+
+def test_bocpd_is_causal_and_flags_a_mean_shift():
+    from rl.features_m4 import bocpd
+    rng = np.random.default_rng(2)
+    x = np.r_[rng.standard_normal(300), 4 + rng.standard_normal(100)]
+    recent, age = bocpd(x, 126)
+    assert recent[302:310].max() > 0.5 > recent[200:290].max() and age[250] > age[305]
+    y = x.copy()
+    y[351:] = -5.0
+    np.testing.assert_array_equal(recent[:351], bocpd(y, 126)[0][:351])
